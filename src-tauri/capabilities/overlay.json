@@ -1,0 +1,6 @@
+{
+  "identifier": "overlay",
+  "description": "Owned resident window: lifecycle and in-memory draft only",
+  "windows": ["overlay"],
+  "permissions": ["core:default", "core:window:allow-start-dragging", "allow-overlay-get", "allow-overlay-control"]
+}

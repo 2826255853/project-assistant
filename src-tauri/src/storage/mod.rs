@@ -1,0 +1,283 @@
+//! Phase 0.5: connection and migrations only; no business repository or IPC.
+use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+use sha2::{Digest, Sha256};
+use std::{
+    fmt, fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+pub mod probe;
+
+pub const DATABASE_NAME: &str = "project-assistant.sqlite3";
+pub const SCHEMA_VERSION: i64 = 1;
+
+struct Migration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+}
+
+const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "initial",
+    sql: include_str!("../../migrations/0001_initial.sql"),
+}];
+
+#[derive(Debug)]
+pub struct StorageError {
+    pub code: &'static str,
+    /// Only a local recovery reference, never SQLite's raw error/query/value.
+    pub backup_path: Option<PathBuf>,
+}
+
+impl fmt::Display for StorageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code)
+    }
+}
+impl std::error::Error for StorageError {}
+
+fn error(code: &'static str) -> StorageError {
+    StorageError {
+        code,
+        backup_path: None,
+    }
+}
+fn sql_error(_: rusqlite::Error) -> StorageError {
+    error("STORAGE_SQL_FAILED")
+}
+fn checksum(sql: &str) -> String {
+    format!("{:x}", Sha256::digest(sql.replace("\r\n", "\n").as_bytes()))
+}
+
+pub struct Storage {
+    pub connection: Connection,
+    pub path: PathBuf,
+}
+
+impl Storage {
+    /// Caller supplies Tauri's app_data_dir (or an owned test subdirectory).
+    pub fn open(data_dir: &Path) -> Result<Self, StorageError> {
+        Self::open_with(data_dir, MIGRATIONS)
+    }
+
+    fn open_with(data_dir: &Path, migrations: &[Migration]) -> Result<Self, StorageError> {
+        fs::create_dir_all(data_dir).map_err(|_| error("STORAGE_DIRECTORY_FAILED"))?;
+        let path = data_dir.join(DATABASE_NAME);
+        let existing = path
+            .try_exists()
+            .map_err(|_| error("STORAGE_OPEN_FAILED"))?;
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | if existing {
+                OpenFlags::empty()
+            } else {
+                OpenFlags::SQLITE_OPEN_CREATE
+            };
+        let mut connection =
+            Connection::open_with_flags(&path, flags).map_err(|_| error("STORAGE_OPEN_FAILED"))?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(sql_error)?;
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .map_err(sql_error)?;
+        connection
+            .pragma_update(None, "synchronous", "FULL")
+            .map_err(sql_error)?;
+        connection
+            .pragma_update(None, "trusted_schema", false)
+            .map_err(sql_error)?;
+        Self::migrate(&mut connection, data_dir, existing, migrations)?;
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(sql_error)?;
+        Ok(Self { connection, path })
+    }
+
+    fn migrate(
+        connection: &mut Connection,
+        data_dir: &Path,
+        existing: bool,
+        migrations: &[Migration],
+    ) -> Result<(), StorageError> {
+        if migrations
+            .iter()
+            .enumerate()
+            .any(|(i, m)| m.version != i as i64 + 1)
+        {
+            return Err(error("STORAGE_MIGRATION_SEQUENCE"));
+        }
+        // Serializes version check, backup and every pending migration against writers.
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| error("STORAGE_BUSY"))?;
+        let version: i64 = transaction
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|_| error("STORAGE_CORRUPT"))?;
+        if version > migrations.len() as i64 {
+            return Err(error("STORAGE_NEWER_SCHEMA"));
+        }
+        let integrity: String = transaction
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .map_err(|_| error("STORAGE_CORRUPT"))?;
+        if integrity != "ok" {
+            return Err(error("STORAGE_CORRUPT"));
+        }
+        if version == 0 {
+            let tables: i64 = transaction
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(sql_error)?;
+            if tables != 0 {
+                return Err(error("STORAGE_UNRECOGNIZED_SCHEMA"));
+            }
+        } else {
+            let mut statement = transaction
+                .prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version")
+                .map_err(|_| error("STORAGE_MIGRATION_HISTORY"))?;
+            let history = statement
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(sql_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql_error)?;
+            if history.len() != version as usize
+                || history.iter().enumerate().any(|(i, (v, name, hash))| {
+                    let m = &migrations[i];
+                    *v != m.version || name != m.name || hash != &checksum(m.sql)
+                })
+            {
+                return Err(error("STORAGE_MIGRATION_HISTORY"));
+            }
+        }
+        let has_fk_error = transaction
+            .prepare("PRAGMA foreign_key_check")
+            .map_err(sql_error)?
+            .query([])
+            .map_err(sql_error)?
+            .next()
+            .map_err(sql_error)?
+            .is_some();
+        if has_fk_error {
+            return Err(error("STORAGE_FOREIGN_KEY_CHECK"));
+        }
+        if version == migrations.len() as i64 {
+            return transaction.commit().map_err(sql_error);
+        }
+
+        let backup_path = if existing {
+            // Read a separate connection while the write lock is held. SQLite backup
+            // copies a coherent committed image, including outstanding WAL pages.
+            Some(Self::backup(data_dir, version)?)
+        } else {
+            None
+        };
+        let result = (|| -> rusqlite::Result<()> {
+            if version == 0 {
+                transaction.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at INTEGER NOT NULL) STRICT;")?;
+            }
+            for migration in migrations.iter().skip(version as usize) {
+                transaction.execute_batch(migration.sql)?;
+                transaction.execute(
+                    "INSERT INTO schema_migrations VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        migration.version,
+                        migration.name,
+                        checksum(migration.sql),
+                        now_ms()
+                    ],
+                )?;
+                transaction.pragma_update(None, "user_version", migration.version)?;
+            }
+            if transaction
+                .prepare("PRAGMA foreign_key_check")?
+                .query([])?
+                .next()?
+                .is_some()
+            {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            transaction.commit()
+        })();
+        result.map_err(|_| StorageError {
+            code: "STORAGE_MIGRATION_FAILED",
+            backup_path,
+        })
+    }
+
+    fn backup(data_dir: &Path, version: i64) -> Result<PathBuf, StorageError> {
+        let directory = data_dir.join("backups");
+        fs::create_dir_all(&directory).map_err(|_| error("STORAGE_BACKUP_FAILED"))?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| error("STORAGE_CLOCK_FAILED"))?
+            .as_nanos();
+        let path = directory.join(format!(
+            "before-v{version}-{nonce}-{}.sqlite3",
+            std::process::id()
+        ));
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|_| error("STORAGE_BACKUP_FAILED"))?;
+        let result = (|| -> rusqlite::Result<()> {
+            let source = Connection::open_with_flags(
+                data_dir.join(DATABASE_NAME),
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            let mut destination = Connection::open(&path)?;
+            let backup = rusqlite::backup::Backup::new(&source, &mut destination)?;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if Instant::now() >= deadline {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+                match backup.step(128)? {
+                    rusqlite::backup::StepResult::Done => break,
+                    rusqlite::backup::StepResult::More => continue,
+                    _ => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+            drop(backup);
+            let check: String =
+                destination.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+            if check != "ok" {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            // Retain partial backups for diagnosis; do not touch the original.
+            return Err(error("STORAGE_BACKUP_FAILED"));
+        }
+        // Windows FlushFileBuffers requires a handle opened with write access.
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| error("STORAGE_BACKUP_FAILED"))?;
+        Ok(path)
+    }
+}
+
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests;

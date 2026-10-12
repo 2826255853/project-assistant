@@ -1,0 +1,15 @@
+.overlay-body { background: transparent; min-width: 0; overflow: hidden; }
+.overlay-root { padding: 6px; }
+.floating-ball { width: 60px; height: 60px; border-radius: 50%; border: 2px solid #a0dccd; background: #247a69; color: white; font-weight: 800; font-size: 18px; cursor: pointer; }
+.overlay-panel { height: 378px; padding: 15px; border: 1px solid #bfd8d1; border-radius: 14px; background: #fff; color: #172333; }
+.overlay-panel header { display: flex; align-items: center; gap: 8px; cursor: move; }
+.overlay-panel header strong { margin-right: auto; font-size: 14px; }
+.overlay-panel button { padding: 6px 9px; border: 1px solid #d6e3df; border-radius: 5px; background: #f3f8f6; color: #245247; }
+.overlay-context, .overlay-notice, .overlay-hint { font-size: 12px; color: #607080; margin: 10px 0; }
+.overlay-notice { background: #fff8ed; padding: 8px; }
+.overlay-panel label { font-size: 12px; }
+.overlay-panel textarea { display: block; width: 100%; height: 100px; margin-top: 6px; padding: 10px; border: 1px solid #cfd9df; border-radius: 6px; resize: none; font: inherit; }
+.overlay-panel footer { display: flex; justify-content: space-between; }
+.overlay-panel button:disabled { opacity: .5; cursor: not-allowed; }
+.overlay-error { font-size: 11px; color: #992c32; margin: 7px 0; }
+.overlay-loading { color: #247a69; }
