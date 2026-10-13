@@ -1,9 +1,9 @@
-//! In-memory resident entry lifecycle. Persisted preferences belong to step 1.4.
+//! Resident entry lifecycle and preferences; business settings belong to step 1.4.
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 pub const DEFAULT_SHORTCUT: &str = "Ctrl+Alt+Space";
@@ -82,6 +82,12 @@ pub fn view(app: &tauri::AppHandle) -> OverlayView {
 }
 
 fn preferences_path(app: &tauri::AppHandle) -> Result<PathBuf, &'static str> {
+    #[cfg(debug_assertions)]
+    if std::env::var("PA_IPC_VERIFY").as_deref() == Ok("1") {
+        if let Some(directory) = std::env::var_os("PA_OVERLAY_VERIFY_DIR") {
+            return Ok(PathBuf::from(directory).join("overlay-settings.json"));
+        }
+    }
     Ok(app
         .path()
         .app_data_dir()
@@ -90,9 +96,15 @@ fn preferences_path(app: &tauri::AppHandle) -> Result<PathBuf, &'static str> {
 }
 
 fn load_preferences(app: &tauri::AppHandle) {
-    let Ok(path) = preferences_path(app) else { return };
-    let Ok(contents) = fs::read_to_string(path) else { return };
-    let Ok(preferences) = serde_json::from_str::<OverlayPreferences>(&contents) else { return };
+    let Ok(path) = preferences_path(app) else {
+        return;
+    };
+    let Ok(contents) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(preferences) = serde_json::from_str::<OverlayPreferences>(&contents) else {
+        return;
+    };
     let state = app.state::<OverlayState>();
     *state.2.lock().unwrap() = preferences.clone();
     let mut view = state.0.lock().unwrap();
@@ -121,7 +133,8 @@ pub fn persist_preferences(app: &tauri::AppHandle) -> Result<(), &'static str> {
             });
         }
     }
-    let contents = serde_json::to_vec_pretty(&preferences).map_err(|_| "PA_OVERLAY_SETTINGS_WRITE_FAILED")?;
+    let contents =
+        serde_json::to_vec_pretty(&preferences).map_err(|_| "PA_OVERLAY_SETTINGS_WRITE_FAILED")?;
     let directory = path.parent().ok_or("PA_OVERLAY_SETTINGS_PATH_FAILED")?;
     fs::create_dir_all(directory).map_err(|_| "PA_OVERLAY_SETTINGS_WRITE_FAILED")?;
     fs::write(path, contents).map_err(|_| "PA_OVERLAY_SETTINGS_WRITE_FAILED")?;
@@ -130,7 +143,13 @@ pub fn persist_preferences(app: &tauri::AppHandle) -> Result<(), &'static str> {
 }
 
 fn restore_position(app: &tauri::AppHandle, window: &WebviewWindow) -> tauri::Result<()> {
-    let position = app.state::<OverlayState>().2.lock().unwrap().position.clone();
+    let position = app
+        .state::<OverlayState>()
+        .2
+        .lock()
+        .unwrap()
+        .position
+        .clone();
     if let Some(position) = position {
         window.set_position(tauri::PhysicalPosition::new(position.x, position.y))?;
     } else if let Some(monitor) = window.primary_monitor()? {
@@ -144,24 +163,54 @@ fn restore_position(app: &tauri::AppHandle, window: &WebviewWindow) -> tauri::Re
     correct_position(window)
 }
 fn publish(app: &tauri::AppHandle) {
-    let current = view(app);
-    // Draft goes only to the owned overlay, never to logs or main diagnostics.
-    let _ = app.emit_to(
-        tauri::EventTarget::WebviewWindow {
-            label: "overlay".into(),
-        },
-        "overlay-state",
-        current.clone(),
-    );
-    let mut public = current;
-    public.draft.clear();
-    let _ = app.emit_to(
-        tauri::EventTarget::WebviewWindow {
-            label: "main".into(),
-        },
-        "overlay-state",
-        public,
-    );
+    crate::app_state::publish(app, crate::ipc::correlation_id());
+}
+
+pub fn validate_action(
+    value: serde_json::Value,
+    overlay_caller: bool,
+) -> Result<OverlayAction, crate::ipc::ErrorCode> {
+    use crate::ipc::ErrorCode;
+    let params: serde_json::Value = crate::ipc::parse_request(value)?;
+    let fields = params.as_object().ok_or(ErrorCode::InvalidRequest)?;
+    let allowed: &[&str] = match fields.get("action").and_then(|v| v.as_str()) {
+        Some("draft") => &["action", "draft"],
+        Some("set_shortcut") => &["action", "shortcut"],
+        _ => &["action"],
+    };
+    if fields.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(ErrorCode::InvalidRequest);
+    }
+    let action: OverlayAction =
+        serde_json::from_value(params).map_err(|_| ErrorCode::InvalidRequest)?;
+    if overlay_caller
+        && matches!(
+            action,
+            OverlayAction::Exit | OverlayAction::SetShortcut { .. } | OverlayAction::RepairPosition
+        )
+    {
+        return Err(ErrorCode::PermissionDenied);
+    }
+    if !overlay_caller && matches!(action, OverlayAction::Draft { .. }) {
+        return Err(ErrorCode::PermissionDenied);
+    }
+    match &action {
+        OverlayAction::Draft { draft } if draft.len() > 32768 => {
+            return Err(ErrorCode::InputTooLarge);
+        }
+        OverlayAction::SetShortcut { shortcut } if shortcut.len() > 80 => {
+            return Err(ErrorCode::InputTooLarge);
+        }
+        OverlayAction::SetShortcut { shortcut }
+            if shortcut
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                .is_err() =>
+        {
+            return Err(ErrorCode::ShortcutInvalid);
+        }
+        _ => {}
+    }
+    Ok(action)
 }
 
 pub fn clamp_axis(position: i32, start: i32, extent: u32, size: u32) -> i32 {
@@ -240,7 +289,7 @@ fn show_entry(app: &tauri::AppHandle, expanded: bool, focus: bool) -> tauri::Res
     Ok(())
 }
 
-pub fn register_shortcut(app: &tauri::AppHandle, candidate: &str) {
+fn register_shortcut(app: &tauri::AppHandle, candidate: &str) {
     let old = view(app).shortcut;
     if candidate.len() > 80
         || candidate
@@ -265,7 +314,6 @@ pub fn register_shortcut(app: &tauri::AppHandle, candidate: &str) {
         app.state::<OverlayState>().0.lock().unwrap().shortcut_error = None;
     }
     let _ = persist_preferences(app);
-    publish(app);
 }
 
 pub fn show_main(app: &tauri::AppHandle) {
@@ -276,6 +324,14 @@ pub fn show_main(app: &tauri::AppHandle) {
 }
 
 pub fn apply(app: &tauri::AppHandle, action: OverlayAction) -> Result<(), &'static str> {
+    apply_with_id(app, action, crate::ipc::correlation_id())
+}
+
+pub fn apply_with_id(
+    app: &tauri::AppHandle,
+    action: OverlayAction,
+    correlation_id: String,
+) -> Result<(), &'static str> {
     let state = app.state::<OverlayState>();
     let _operation = state.1.lock().unwrap();
     match action {
@@ -292,6 +348,7 @@ pub fn apply(app: &tauri::AppHandle, action: OverlayAction) -> Result<(), &'stat
                 return Err("PA_OVERLAY_DRAFT_TOO_LARGE");
             }
             app.state::<OverlayState>().0.lock().unwrap().draft = draft;
+            crate::app_state::publish(app, correlation_id);
             return Ok(());
         }
         OverlayAction::Disable => {
@@ -326,14 +383,14 @@ pub fn apply(app: &tauri::AppHandle, action: OverlayAction) -> Result<(), &'stat
             if show_entry(app, expanded, expanded).is_err() {
                 app.state::<OverlayState>().0.lock().unwrap().window_error =
                     Some("PA_OVERLAY_WINDOW_FAILED");
-                publish(app);
+                crate::app_state::publish(app, correlation_id);
                 return Err("PA_OVERLAY_WINDOW_FAILED");
             }
             let shortcut = view(app).shortcut;
             register_shortcut(app, &shortcut);
         }
     }
-    publish(app);
+    crate::app_state::publish(app, correlation_id);
     Ok(())
 }
 
@@ -393,6 +450,60 @@ pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn strict_requests_limits_and_window_roles_precede_mutation() {
+        use crate::ipc::ErrorCode;
+        use serde_json::json;
+        for request in [
+            json!({"apiVersion":1,"params":{"action":"enable","secret":"synthetic-secret"}}),
+            json!({"apiVersion":1,"params":{"action":"draft","draft":false}}),
+            json!({"apiVersion":1,"params":{"action":"unknown"}}),
+            json!({"apiVersion":1,"params":{"action":"enable"},"correlationId":"forged"}),
+        ] {
+            assert!(matches!(
+                validate_action(request, false),
+                Err(ErrorCode::InvalidRequest)
+            ));
+        }
+        assert!(matches!(
+            validate_action(json!({"apiVersion":2,"params":{"action":"enable"}}), false),
+            Err(ErrorCode::VersionUnsupported)
+        ));
+        for action in ["exit", "repair_position"] {
+            assert!(matches!(
+                validate_action(json!({"apiVersion":1,"params":{"action":action}}), true),
+                Err(ErrorCode::PermissionDenied)
+            ));
+        }
+        assert!(matches!(
+            validate_action(
+                json!({"apiVersion":1,"params":{"action":"set_shortcut","shortcut":"Ctrl+A"}}),
+                true
+            ),
+            Err(ErrorCode::PermissionDenied)
+        ));
+        assert!(matches!(
+            validate_action(
+                json!({"apiVersion":1,"params":{"action":"draft","draft":"hello"}}),
+                false
+            ),
+            Err(ErrorCode::PermissionDenied)
+        ));
+        assert!(matches!(
+            validate_action(
+                json!({"apiVersion":1,"params":{"action":"draft","draft":"中".repeat(10923)}}),
+                true
+            ),
+            Err(ErrorCode::InputTooLarge)
+        ));
+        assert!(
+            validate_action(
+                json!({"apiVersion":1,"params":{"action":"draft","draft":"a".repeat(32768)}}),
+                true
+            )
+            .is_ok()
+        );
+    }
     #[test]
     fn clamping_handles_removed_monitors_negative_origins_and_large_windows() {
         assert_eq!(clamp_axis(4000, 0, 1920, 390), 1530);

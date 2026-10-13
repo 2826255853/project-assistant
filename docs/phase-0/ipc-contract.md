@@ -2,6 +2,8 @@
 
 日期：2026-10-11（Asia/Shanghai）。适用：当前 Windows x64 基线与阶段一服务实现。TypeScript DTO 见 `src/ipc/contracts.ts`，Rust envelope/首个命令见 `src-tauri/src/ipc.rs`。本文是应用内部 IPC；Codex wire 协议由 [0.3 契约](codex-contract.md) 单独管理，SQLite schema 版本由 [迁移 ADR](storage-migration-adr.md) 单独管理。
 
+> 2026-10-13 步骤 1.2 更新：生产已实现的命令与状态/事件契约以 [步骤 1.2 记录](../phase-1/step-1.2.md) 及其正式契约为准。本文下方业务命令表仍是后续步骤草案，未注册、未授权的接口不可调用。`ImplementedCommandMap` 明确限定当前可调用的正式入口；早期 `app_get_status.codex` 安装探测草案由返回 `services` 不可用原因的实现替代。
+
 ## 职责与信任边界
 
 | 层 | 职责 | 禁止事项 |

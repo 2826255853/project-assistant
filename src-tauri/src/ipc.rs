@@ -1,4 +1,4 @@
-//! IPC v1 foundation; business status and events are added in step 1.2.
+//! IPC v1 strict requests, caller checks, public errors and fixed log fields.
 use serde::{Deserialize, Serialize};
 use std::sync::{
     OnceLock,
@@ -19,6 +19,8 @@ pub struct Request<T> {
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCategory {
     Validation,
+    Permission,
+    Conflict,
     Compatibility,
     Internal,
 }
@@ -35,6 +37,14 @@ pub enum ErrorCode {
     InputTooLarge,
     #[serde(rename = "PA_DESKTOP_INITIALIZATION_FAILED")]
     DesktopInitializationFailed,
+    #[serde(rename = "PA_IPC_PERMISSION_DENIED")]
+    PermissionDenied,
+    #[serde(rename = "PA_OVERLAY_CONTROL_FAILED")]
+    OverlayControlFailed,
+    #[serde(rename = "PA_SHORTCUT_INVALID")]
+    ShortcutInvalid,
+    #[serde(rename = "PA_SHORTCUT_CONFLICT")]
+    ShortcutConflict,
 }
 
 #[derive(Serialize)]
@@ -67,8 +77,28 @@ impl ErrorCode {
             ),
             Self::InputTooLarge => (
                 ErrorCategory::Validation,
-                "测试消息超出长度限制。",
-                "请将消息缩短至 4096 UTF-8 字节以内。",
+                "输入超出长度限制。",
+                "请缩短输入后重试。",
+            ),
+            Self::PermissionDenied => (
+                ErrorCategory::Permission,
+                "当前窗口无权执行此操作。",
+                "请使用应用主窗口中的对应入口。",
+            ),
+            Self::OverlayControlFailed => (
+                ErrorCategory::Internal,
+                "常驻入口操作失败。",
+                "请从托盘重试；持续失败时重新启动应用。",
+            ),
+            Self::ShortcutInvalid => (
+                ErrorCategory::Validation,
+                "快捷键格式无效。",
+                "请更换快捷键组合后重试。",
+            ),
+            Self::ShortcutConflict => (
+                ErrorCategory::Conflict,
+                "快捷键已被系统或其他应用占用。",
+                "请更换快捷键组合；悬浮球仍可使用。",
             ),
             Self::DesktopInitializationFailed => (
                 ErrorCategory::Internal,
@@ -152,6 +182,14 @@ pub struct ProbeLog<'a> {
     error_code: Option<ErrorCode>,
 }
 pub fn probe_log(correlation_id: &str, error: Option<ErrorCode>) -> String {
+    command_log("framework_probe", correlation_id, error)
+}
+
+pub fn command_log(
+    command: &'static str,
+    correlation_id: &str,
+    error: Option<ErrorCode>,
+) -> String {
     serde_json::to_string(&ProbeLog {
         api_version: API_VERSION,
         occurred_at: SystemTime::now()
@@ -159,7 +197,7 @@ pub fn probe_log(correlation_id: &str, error: Option<ErrorCode>) -> String {
             .unwrap_or_default()
             .as_millis(),
         level: if error.is_some() { "warn" } else { "info" },
-        command: "framework_probe",
+        command,
         event: "ipc_completed",
         correlation_id,
         outcome: if error.is_some() {
@@ -170,6 +208,41 @@ pub fn probe_log(correlation_id: &str, error: Option<ErrorCode>) -> String {
         error_code: error,
     })
     .expect("fixed log fields serialize")
+}
+
+pub fn parse_request<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+) -> Result<T, ErrorCode> {
+    let request: Request<T> =
+        serde_json::from_value(value).map_err(|_| ErrorCode::InvalidRequest)?;
+    if request.api_version != API_VERSION {
+        return Err(ErrorCode::VersionUnsupported);
+    }
+    Ok(request.params)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmptyParams {}
+
+// Capability checks are supplemented with the actual caller origin, never a UI field.
+pub fn authorize_origin(label: &str, url: &str, main_only: bool) -> Result<(), ErrorCode> {
+    let owned = label == "main" || (!main_only && label == "overlay");
+    let local = url == "tauri://localhost/"
+        || url.starts_with("tauri://localhost/")
+        || url.starts_with("http://tauri.localhost/")
+        || url.starts_with("https://tauri.localhost/")
+        || (cfg!(debug_assertions) && url.starts_with("http://localhost:1420/"));
+    if owned && local {
+        Ok(())
+    } else {
+        Err(ErrorCode::PermissionDenied)
+    }
+}
+
+pub fn authorize(window: &tauri::WebviewWindow, main_only: bool) -> Result<(), ErrorCode> {
+    let url = window.url().map_err(|_| ErrorCode::PermissionDenied)?;
+    authorize_origin(window.label(), url.as_str(), main_only)
 }
 
 #[derive(Deserialize)]
@@ -209,6 +282,25 @@ pub fn probe(request: serde_json::Value) -> Result<ProbeReply, ErrorCode> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn actual_caller_labels_and_origins_are_required() {
+        assert!(authorize_origin("main", "http://tauri.localhost/index.html", true).is_ok());
+        assert!(authorize_origin("overlay", "http://tauri.localhost/index.html", false).is_ok());
+        for (label, origin, main_only) in [
+            ("other", "http://tauri.localhost/index.html", false),
+            ("overlay", "http://tauri.localhost/index.html", true),
+            ("main", "https://example.com/", false),
+            ("main", "http://localhost:1420.evil.test/", false),
+            ("main", "http://localhost:1421/", false),
+            ("main", "http://tauri.localhost.evil.test/", false),
+        ] {
+            assert!(matches!(
+                authorize_origin(label, origin, main_only),
+                Err(ErrorCode::PermissionDenied)
+            ));
+        }
+    }
 
     #[test]
     fn malformed_and_incompatible_requests_are_safe() {

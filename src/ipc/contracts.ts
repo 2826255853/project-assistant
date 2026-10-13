@@ -1,4 +1,4 @@
-// Phase 0.6 draft, scoped by ADR-0011. Only framework_probe is implemented.
+// IPC v1. CommandMap includes future DTOs; ImplementedCommandMap is the callable surface.
 export const API_VERSION = 1 as const;
 export type ErrorCategory = "validation" | "permission" | "environment" | "authentication" | "compatibility" | "conflict" | "timeout" | "cancelled" | "external" | "storage" | "internal";
 export interface AppError { category: ErrorCategory; code: string; message: string; suggestion: string; retryable: boolean }
@@ -7,7 +7,7 @@ export type Response<T> =
   | { apiVersion: 1; correlationId: string; status: "ok"; data: T }
   | { apiVersion: 1; correlationId: string; status: "error"; error: AppError };
 export interface ProbeReply { message: string; platform: string; architecture: string }
-// Shell lifecycle only; app_get_status remains the step 1.2 business contract.
+// Desktop startup mode. app_get_status returns the separate authoritative service snapshot.
 export interface DesktopReady { mode: "normal" | "phase0" }
 export interface OverlayView { enabled: boolean; expanded: boolean; shortcut: string; shortcutError: string | null; windowError: string | null; draft: string; trayReady: boolean }
 export type SourceKind = "relay" | "official";
@@ -66,10 +66,29 @@ export interface ManualCcSwitchStatus {
   readSupported: false; switchSupported: false;
 }
 
+export interface ActiveContext { projectId: string; sessionId: string; profileId: string; modelId: string; effort: string | null }
+export interface ServiceStatus { id: "desktop" | "ipc" | "events" | "overlay" | "storage" | "settings" | "logging" | "credentials" | "providers" | "codex" | "projects" | "tasks"; state: "ready" | "unavailable" | "degraded"; reasonCode: string | null }
+export interface AppStatus {
+  apiVersion: 1; streamId: string; sequence: number; configState: "unconfigured";
+  services: ServiceStatus[]; ccSwitch: ManualCcSwitchStatus;
+  activeContext: ActiveContext | null; taskStatus: "idle"; overlay: OverlayView;
+}
+export type OverlayAction =
+  | { action: "expand" | "collapse" | "enable" | "disable" | "open_main" | "exit" | "repair_position" }
+  | { action: "set_shortcut"; shortcut: string }
+  | { action: "draft"; draft: string };
+export interface ImplementedCommandMap {
+  framework_probe: { params: { message: string }; data: ProbeReply };
+  desktop_initialize: { params: Record<string, never>; data: DesktopReady };
+  app_get_status: { params: Record<string, never>; data: AppStatus };
+  overlay_get: { params: Record<string, never>; data: OverlayView };
+  overlay_control: { params: OverlayAction; data: null };
+}
+
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.
 export interface CommandMap {
   framework_probe: { params: { message: string }; data: ProbeReply };
-  app_get_status: { params: Record<string, never>; data: { apiVersion: 1; configState: ConfigState; codex: AdapterStatus; ccSwitch: ManualCcSwitchStatus } };
+  app_get_status: ImplementedCommandMap["app_get_status"];
   settings_get: { params: SettingsScope; data: SettingsView };
   settings_update: { params: SettingsScope & { expectedRevision: number; changes: SettingChange[] }; data: SettingsView };
   providers_list: { params: Record<string, never>; data: { profiles: ProviderProfile[]; active: AiSelection | null; configState: ConfigState } };
@@ -90,6 +109,7 @@ export interface CommandMap {
   approval_decide: { params: { approvalId: string; taskId: string; operationFingerprint: string; decision: "approve" | "deny" }; data: { decision: "approved" | "denied" | "expired" } };
 }
 export type EventPayload =
+  | { type: "app_state_changed" }
   | { type: "ai_config_changed"; configState: ConfigState; active: AiSelection | null; reason: "local_change" | "external_change" | "credential_change" }
   | { type: "operation_progress"; operationId: string; phase: "checking" | "waiting_for_idle" | "applying" | "rolling_back"; affectedTaskIds: string[] }
   | { type: "operation_completed"; operationId: string; result: ConnectionTest | SwitchResult | null; error: AppError | null }

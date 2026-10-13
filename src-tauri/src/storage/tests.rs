@@ -370,3 +370,125 @@ fn migration_sequence_has_no_gaps() {
         "STORAGE_MIGRATION_SEQUENCE"
     );
 }
+
+#[test]
+fn startup_recovery_interrupts_work_and_is_idempotent() {
+    let (_directory, mut storage) = fixture();
+    storage
+        .connection
+        .execute_batch(
+            "UPDATE tasks SET status = 'running', started_at = 1001, finished_at = NULL, snapshot_id = 'snap1' WHERE id = 't1'; UPDATE approvals SET decision = 'pending', decided_at = NULL WHERE id = 'a1';",
+        )
+        .unwrap();
+    let first = storage.recover_on_startup("recovery-1").unwrap();
+    assert_eq!(
+        first,
+        RecoverySummary {
+            tasks: 1,
+            approvals: 1
+        }
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row("SELECT status FROM tasks WHERE id = 't1'", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "interrupted"
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row("SELECT decision FROM approvals WHERE id = 'a1'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        "interrupted"
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_kind = 'storage_recovery'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        storage.recover_on_startup("recovery-2").unwrap(),
+        RecoverySummary {
+            tasks: 0,
+            approvals: 0
+        }
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_kind = 'storage_recovery'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn typed_repositories_keep_business_access_out_of_raw_ipc() {
+    let (_directory, mut storage) = fixture();
+    let setting = storage.settings().get_global("ai_defaults").unwrap();
+    assert!(setting.is_some());
+    storage
+        .settings()
+        .put_text("global-search", "search_engine", "bing", 1)
+        .unwrap();
+    assert_eq!(
+        storage
+            .settings()
+            .get_global("search_engine")
+            .unwrap()
+            .unwrap()
+            .value_text
+            .as_deref(),
+        Some("bing")
+    );
+    assert!(
+        storage
+            .settings()
+            .put_text("bad-setting", "api_key", "synthetic", 1)
+            .is_err()
+    );
+    assert!(storage.profiles().exists("provider1").unwrap());
+    assert_eq!(
+        storage
+            .capabilities()
+            .count_valid("provider1", 1001)
+            .unwrap(),
+        1
+    );
+    assert!(storage.snapshots().exists("snap1").unwrap());
+    storage
+        .audit()
+        .record(AuditEventInput {
+            id: "typed-audit",
+            correlation_id: "typed-correlation",
+            event_kind: "config_read",
+            outcome: "success",
+            error_code: None,
+        })
+        .unwrap();
+    assert_eq!(
+        storage
+            .connection
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE id = 'typed-audit'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}

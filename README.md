@@ -1,6 +1,8 @@
 # 本机项目助手 · 桌面基础
 
-步骤 1.1（S1-01）已实现桌面主框架：默认进入工作台，提供项目、设置、AI 配置和服务状态导航，以及启动错误恢复与退出入口。常驻入口的启停、快捷键、位置和显示器标识已支持本机持久化；业务服务仍按后续步骤开放，项目列表、业务设置、profile/Key、生产进程隔离尚未启用。详细规划以 [计划文档 v1.4](计划文档.txt)、[步骤 1.1 实施记录](docs/phase-1/step-1.1.md) 和 [替代方案 ADR-0011](docs/phase-0/self-managed-profile-adr.md) 为准。
+步骤 1.1（S1-01）已实现桌面主框架：默认进入工作台，提供项目、设置、AI 配置和服务状态导航，以及启动错误恢复与退出入口。常驻入口的启停、快捷键、位置和显示器标识已支持本机持久化；业务服务仍按后续步骤开放，项目列表、业务设置、profile/Key、生产进程隔离尚未启用。详细规划以 [计划文档 v1.5](计划文档.txt)、[步骤 1.1 实施记录](docs/phase-1/step-1.1.md) 和 [替代方案 ADR-0011](docs/phase-0/self-managed-profile-adr.md) 为准。
+
+步骤 1.2（S1-02）已接通正式 IPC、服务状态查询和版本化事件；主窗口与悬浮入口共享服务状态，事件缺口和窗口重建可重新查询恢复。详情见 [验收记录](docs/phase-1/step-1.2.md) 与 [正式契约及命令授权矩阵](docs/phase-1/ipc-state-contract.md)。复现入口为 `npm run verify:state`，报告位于 `artifacts/phase-1-2/report.json`。
 
 ## Codex 配置约定
 
@@ -44,7 +46,7 @@ npm run tauri dev
 $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 ```
 
-开发模式使用固定端口 1420；端口占用时退出并提示错误。Rust 首次编译时间较长，后续会复用缓存。正常启动先显示初始化状态，再进入工作台；导航可用 Tab 与 Enter/空格操作，切换后焦点移至页面标题。未开放的服务显示明确提示，设置表单只作禁用预览。初始化失败提供“重试初始化”和“退出应用”。窗口 X 与“退出应用”均结束应用；若 Vite 仍在终端运行，按 Ctrl+C 结束开发命令。
+开发模式使用固定端口 1420；端口占用时退出并提示错误。Rust 首次编译时间较长，后续会复用缓存。正常启动先显示初始化状态，再进入工作台；导航可用 Tab 与 Enter/空格操作，切换后焦点移至页面标题。未开放的服务显示明确提示，设置表单只作禁用预览。初始化失败提供“重试初始化”和“退出应用”。常驻模式开启时，主窗口 X 隐藏窗口；停用常驻模式后 X 退出应用。“退出应用”始终结束应用；若 Vite 仍在终端运行，按 Ctrl+C 结束开发命令。
 
 `npm run dev` 仅启动浏览器前端，普通浏览器中没有 Tauri IPC，会显示固定本地服务不可用提示。请使用 `npm run tauri dev` 查看真实主窗口。
 
@@ -53,6 +55,9 @@ $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 ```powershell
 # 步骤 1.1：构建、Rust/IPC/Codex 离线测试，两种桌面模式的正常/失败/阶段0入口及系统打开回归
 npm run verify:shell
+
+# 步骤 1.2：正式 IPC、状态、事件恢复、窗口 ACL 与双资源模式桌面验收
+npm run verify:state
 
 # 启动真实桌面窗口，自动验证往返、错误、重试和窗口关闭退出
 npm run verify:desktop
@@ -170,6 +175,8 @@ npm run test:ipc
 
 - [步骤 0.7 阶段门评审与阶段一候选清单](docs/phase-0/phase-gate-review.md)
 - [步骤 1.1：主框架、模块职责与验收记录](docs/phase-1/step-1.1.md)
+- [步骤 1.2：正式 IPC、状态与事件通路验收记录](docs/phase-1/step-1.2.md)
+- [步骤 1.3：正式数据库、仓储与启动恢复验收记录](docs/phase-1/step-1.3.md)
 - [环境基线](docs/phase-0/environment.md)
 - [实验清单](docs/phase-0/experiments.md)
 - [风险登记册](docs/phase-0/risks.md)
@@ -189,5 +196,7 @@ npm run test:ipc
 - [错误、日志与最小审计规范](docs/phase-0/errors-and-logging.md)
 - [安全边界与威胁测试清单](docs/phase-0/security-checklist.md)
 - [步骤 0.6 验收](docs/phase-0/ipc-security-verification.md)
+
+步骤 1.3（S1-03）已接入正常启动数据库、schema v1 迁移、类型化仓储和启动恢复；数据库失败保持原库并返回固定 storage 原因码。详情见 [验收记录](docs/phase-1/step-1.3.md)。设置 IPC、日志/完整审计、凭据库和真实 provider/Codex 服务仍按后续步骤推进。
 
 步骤 0.3、0.7 及阶段 0 按替代范围通过，允许启动阶段一；生产自管凭据、隔离与恢复仍待实现和验收，见 [阶段门评审](docs/phase-0/phase-gate-review.md)。

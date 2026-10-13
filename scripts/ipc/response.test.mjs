@@ -48,6 +48,13 @@ test("IPC permissions are limited to the local main window and explicit commands
   assert.deepEqual(overlay.windows, ["overlay"]);
   assert.ok(!overlay.permissions.includes("allow-desktop-initialize"));
   assert.ok(!overlay.permissions.some((p) => /credential|probe|opener/.test(p)));
+  for (const capability of [config, overlay]) {
+    assert.ok(capability.permissions.includes("allow-app-get-status"));
+    assert.ok(capability.permissions.includes("core:event:allow-listen"));
+    assert.ok(capability.permissions.includes("core:event:allow-unlisten"));
+    assert.ok(!capability.permissions.some(p => /core:default|event:default|allow-emit|allow-ipc-fixture|provider|credential|operation|task-start|approval/.test(p)));
+    assert.equal(capability.remote, undefined);
+  }
   const build = await readFile(new URL("../../src-tauri/build.rs", import.meta.url), "utf8");
   assert.ok(build.includes("AppManifest::new().commands"));
   assert.ok(!config.permissions.some((p) => typeof p === "string" && /shell|fs:|allow-all/.test(p)));

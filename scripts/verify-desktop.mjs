@@ -1,18 +1,21 @@
 // Windows-only framework smoke test. CDP is enabled only for this child process.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createWriteStream } from "node:fs";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { verifyIpcDesktop } from "./ipc/desktop.mjs";
 
 assert.equal(process.platform, "win32", "This test requires Windows and WebView2.");
 assert.ok(process.env.npm_execpath, "Run this script with npm run verify:desktop.");
 const mode = process.argv[2] ?? "dev";
 assert.ok(["dev", "built"].includes(mode), "Expected dev or built.");
 const scenario = process.argv[3] ?? "phase0";
-assert.ok(["phase0", "shell", "shell-error"].includes(scenario));
+assert.ok(["phase0", "shell", "shell-error", "ipc"].includes(scenario));
 const shell = scenario !== "phase0";
 const root = resolve(import.meta.dirname, "..");
 const output = resolve(root, "artifacts", shell ? `shell-${mode}-${scenario}` : `desktop-${mode}`);
@@ -24,10 +27,16 @@ await new Promise((resolvePort, reject) => {
 });
 const debugPort = listener.address().port;
 await new Promise((done) => listener.close(done));
+const overlayFixtureDirectory = scenario === "ipc" ? await mkdtemp(resolve(tmpdir(), "project-assistant-ipc-")) : "";
+const remote = createHttpServer((_, response) => { response.end('<!doctype html><title>IPC remote fixture</title><p>Local verification fixture</p>'); });
+if (scenario === "ipc") await new Promise(done => remote.listen(0, "127.0.0.1", done));
 const env = {
   ...process.env,
   PA_DESKTOP_MODE: shell ? "normal" : "phase0",
   PA_SHELL_FAIL_ONCE: scenario === "shell-error" ? "1" : "0",
+  PA_IPC_VERIFY: scenario === "ipc" ? "1" : "0",
+  PA_OVERLAY_VERIFY_DIR: overlayFixtureDirectory,
+  PA_IPC_REMOTE_URL: scenario === "ipc" ? `http://127.0.0.1:${remote.address().port}/` : "",
   CARGO_TERM_COLOR: "never",
   CARGO_TERM_PROGRESS_WHEN: "never",
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1`,
@@ -153,33 +162,34 @@ try {
     await new Promise((done, reject) => { overlaySocket.addEventListener("open", done, { once: true }); overlaySocket.addEventListener("error", reject, { once: true }); });
     overlaySocket.addEventListener("message", receive);
     const overlayEval = (expression) => evaluate(expression, overlaySocket);
-    if (await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.enabled)") === false) {
-      await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { action: { action: 'enable' } })");
+    if (await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.enabled)") === false) {
+      await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'enable' } } })");
       report.results.push("已恢复上次保存的停用状态，托盘/主窗口入口可重新启用");
     }
     await until(() => overlayEval("Boolean(document.querySelector('.floating-ball'))"), Boolean);
-    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.trayReady)"), true);
+    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.trayReady)"), true);
     report.results.push("系统托盘已创建，提供展开、启停、主窗口和退出菜单入口");
     assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('plugin:window|is_always_on_top', { label: 'overlay' })"), true);
     assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('plugin:window|is_visible', { label: 'overlay' })"), true);
     assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('desktop_initialize', { request: { apiVersion: 1, params: {} } }).then(() => false, () => true)"), true);
     report.results.push("首次默认创建独立置顶悬浮球，overlay capability 拒绝 main 初始化命令");
-    await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { action: { action: 'set_shortcut', shortcut: 'not-a-shortcut' } })");
-    await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.shortcutError)"), (value) => value === "PA_SHORTCUT_INVALID");
-    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.shortcut)"), "Ctrl+Alt+Space");
+    const invalidShortcut = await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'set_shortcut', shortcut: 'not-a-shortcut' } } })");
+    assert.equal(invalidShortcut.error.code, "PA_SHORTCUT_INVALID");
+    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcut)"), "Ctrl+Alt+Space");
     report.results.push("非法快捷键被拒绝并显示固定错误，原快捷键保留");
-    await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { action: { action: 'set_shortcut', shortcut: 'Ctrl+Alt+Delete' } })");
-    await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.shortcutError)"), (value) => value === "PA_SHORTCUT_CONFLICT");
-    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.shortcut)"), "Ctrl+Alt+Space");
+    const conflictShortcut = await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'set_shortcut', shortcut: 'Ctrl+Alt+Delete' } } })");
+    assert.equal(conflictShortcut.error.code, 'PA_SHORTCUT_CONFLICT');
+    await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcutError)"), (value) => value === "PA_SHORTCUT_CONFLICT");
+    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcut)"), "Ctrl+Alt+Space");
     report.results.push("Windows 保留快捷键冲突被拒绝并提示更换组合，原快捷键保留");
-    await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { action: { action: 'set_shortcut', shortcut: 'Ctrl+Alt+Space' } })");
-    await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.shortcutError)"), (value) => value === null);
+    await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'set_shortcut', shortcut: 'Ctrl+Alt+Space' } } })");
+    await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcutError)"), (value) => value === null);
     await overlayEval("document.querySelector('.floating-ball').click()");
     await until(() => overlayEval("document.activeElement.id"), (id) => id === "overlay-draft");
     const draft = "中文草稿\n第二行 & DO-NOT-LOG";
     await overlayEval(`(() => { const input = document.querySelector('#overlay-draft'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(draft)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-    await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.draft)"), (value) => value === draft);
-    assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.draft)"), "");
+    await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.draft)"), (value) => value === draft);
+    assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.draft)"), "");
     await overlayEval("document.querySelector('#overlay-draft').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }))");
     assert.equal(await overlayEval("Boolean(document.querySelector('.overlay-error'))"), false);
     await overlayEval("document.querySelector('#overlay-draft').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))");
@@ -197,13 +207,20 @@ try {
     await overlayEval("document.querySelector('footer button:first-child').click()");
     await until(() => evaluate("window.__TAURI_INTERNALS__.invoke('plugin:window|is_visible', { label: 'main' })"), Boolean);
     await overlayEval("document.querySelector('[aria-label=关闭常驻入口]').click()");
-    await until(() => evaluate("window.__TAURI_INTERNALS__.invoke('overlay_get').then(s => s.enabled)"), (enabled) => enabled === false);
-    await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { action: { action: 'enable' } })");
+    await until(() => evaluate("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.enabled)"), (enabled) => enabled === false);
+    await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'enable' } } })");
     await until(() => overlayEval("Boolean(document.querySelector('.floating-ball'))"), Boolean);
     const labels = await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:window|get_all_windows')");
     assert.deepEqual(labels.sort(), ["main", "overlay"]);
     report.results.push("常驻开启时主窗口关闭仅隐藏，可从悬浮面板恢复；关闭入口停用，再启用复用唯一 overlay");
-    if (scenario === "shell-error") await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { action: { action: 'disable' } })");
+    if (scenario === "ipc") {
+      await verifyIpcDesktop({ evaluate, until, report, debugPort, receive,
+        getOverlaySocket: () => overlaySocket,
+        replaceOverlaySocket: next => { overlaySocket?.close(); overlaySocket = next; },
+        cdp, mainUrl: target.url,
+      });
+    }
+    if (scenario === "shell-error") await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'disable' } } })");
   } else {
   await until(() => evaluate("Boolean(document.querySelector('#probe-message'))"), Boolean);
   assert.equal(await evaluate("document.querySelector('h1').textContent"), "桌面框架验证");
@@ -253,7 +270,7 @@ try {
   // Match the exact executable path, then send normal WM_CLOSE via CloseMainWindow.
   const exe = resolve(root, "src-tauri", "target", "debug", "project-assistant.exe");
   const psPath = `'${exe.replaceAll("'", "''")}'`;
-  const useExitButton = shell && scenario === "shell";
+  const useExitButton = shell && ["shell", "ipc"].includes(scenario);
   if (useExitButton) await evaluate("document.querySelector('.exit-button').click()");
   const close = spawnSync("powershell.exe", ["-NoProfile", "-Command", `
     $p = @(Get-Process -Name 'project-assistant' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ${psPath} });
@@ -289,10 +306,12 @@ try {
 } finally {
   socket?.close();
   overlaySocket?.close();
+  if (remote.listening) await new Promise(done => remote.close(done));
   // Terminate only the launcher tree created by this test, including Vite.
   if (child.exitCode === null && child.pid) {
     spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
   }
+  if (overlayFixtureDirectory) await rm(overlayFixtureDirectory, { recursive: true, force: true });
   log.end();
   await writeFile(resolve(output, "report.json"), JSON.stringify(report, null, 2) + "\n");
 }

@@ -3,6 +3,8 @@ import "./App.css";
 import { StatePanel } from "./components/StatePanel";
 import { closeApplication, controlOverlay } from "./ipc/client";
 import { useOverlay } from "./app/useOverlay";
+import { useAppStatus } from "./app/useAppStatus";
+import type { AppStatus, OverlayAction } from "./ipc/contracts";
 type Page = "home" | "projects" | "ai" | "settings" | "diagnostics";
 const pageMeta: Record<Page, {
     label: string;
@@ -64,7 +66,7 @@ function ResidentControls() {
     const [shortcut, setShortcut] = useState("Ctrl+Alt+Space");
     const [error, setError] = useState("");
     useEffect(() => { if (view) setShortcut(view.shortcut); }, [view?.shortcut]);
-    function act(action: string, params?: Record<string, string>) {
+    function act(action: OverlayAction["action"], params?: Record<string, string>) {
         setError("");
         void controlOverlay(action, params).catch((cause: Error) => setError(cause.message));
     }
@@ -78,18 +80,19 @@ function ResidentControls() {
       {(error || view?.windowError) && <p role="alert">{error || "入口置顶或位置恢复失败，请从托盘重新展开。"}</p>}
     </section>;
 }
-function DiagnosticsPage() {
-    return <div className="page-content"><div className="status-grid"><StatusCard title="桌面框架" value="已就绪" detail="窗口与本地初始化已完成" tone="ready"/><StatusCard title="设置与数据服务" value="尚未启用" detail="保存与恢复功能正在准备中" tone="pending"/><StatusCard title="AI 配置服务" value="尚未启用" detail="凭据保护和进程隔离尚未就绪" tone="pending"/></div>
+function DiagnosticsPage({ status }: { status: AppStatus | null }) {
+    return <div className="page-content"><div className="status-grid">{status?.services.map(service => <StatusCard key={service.id} title={service.id} value={service.state === "ready" ? "已就绪" : service.state === "degraded" ? "需要处理" : "尚未启用"} detail={service.reasonCode ?? "本地服务可用"} tone={service.state === "ready" ? "ready" : "pending"}/>)}</div>
     <StatePanel kind="unavailable" title="业务服务正在准备中"><p>项目、设置和 AI 配置功能上线后，将在这里显示服务状态。</p><p>cc-switch 为外部手动管理，自动集成已关闭。</p></StatePanel>
   </div>;
 }
 function App() {
+    const { status, error: syncError, retry } = useAppStatus();
     const [page, setPage] = useState<Page>("home");
     const meta = pageMeta[page];
     const [closeError, setCloseError] = useState("");
     const heading = useRef<HTMLHeadingElement>(null);
     useEffect(() => { heading.current?.focus(); }, [page]);
     function navigate(next: Page) { setPage(next); }
-    return <div className="app-shell"><a className="skip-link" href="#page-heading">跳到页面内容</a><aside className="sidebar"><div className="brand"><div className="brand-mark">PA</div><div><b>Project Assistant</b><small>本机开发工作台</small></div></div><nav aria-label="主导航"><p className="nav-heading">工作区</p>{(["home", "projects", "ai"] as Page[]).map((item) => <NavButton key={item} page={item} current={page} onSelect={navigate}/>)}<p className="nav-heading">应用</p>{(["settings", "diagnostics"] as Page[]).map((item) => <NavButton key={item} page={item} current={page} onSelect={navigate}/>)}</nav><div className="sidebar-footer"><span className="online-dot"/>桌面框架已就绪</div><button className="exit-button" type="button" onClick={() => { void closeApplication().catch((error: Error) => setCloseError(error.message)); }}>退出应用</button>{closeError && <p role="alert">{closeError}</p>}</aside><main className="main-area" data-page={page}><header className="topbar"><div><p className="breadcrumb">工作区 / {meta.label}</p><h1 id="page-heading" ref={heading} tabIndex={-1}>{meta.title}</h1></div><span className="version-pill">本地优先</span></header>{page === "home" ? <Home onSelect={navigate}/> : page === "diagnostics" ? <DiagnosticsPage /> : page === "settings" ? <SettingsPage /> : <Placeholder page={page} onSelect={navigate}/>}</main></div>;
+    return <div className="app-shell" data-context={status?.activeContext?.projectId ?? ""} data-stream={status?.streamId} data-sequence={status?.sequence}><a className="skip-link" href="#page-heading">跳到页面内容</a><aside className="sidebar"><div className="brand"><div className="brand-mark">PA</div><div><b>Project Assistant</b><small>本机开发工作台</small></div></div><nav aria-label="主导航"><p className="nav-heading">工作区</p>{(["home", "projects", "ai"] as Page[]).map((item) => <NavButton key={item} page={item} current={page} onSelect={navigate}/>)}<p className="nav-heading">应用</p>{(["settings", "diagnostics"] as Page[]).map((item) => <NavButton key={item} page={item} current={page} onSelect={navigate}/>)}</nav><div className="sidebar-footer"><span className="online-dot"/>桌面框架已就绪</div><button className="exit-button" type="button" onClick={() => { void closeApplication().catch((error: Error) => setCloseError(error.message)); }}>退出应用</button>{closeError && <p role="alert">{closeError}</p>}</aside><main className="main-area" data-page={page}><header className="topbar"><div><p className="breadcrumb">工作区 / {meta.label}</p><h1 id="page-heading" ref={heading} tabIndex={-1}>{meta.title}</h1></div><span className="version-pill">本地优先</span></header>{syncError && <p role="alert">{syncError}<button onClick={retry}>重试同步</button></p>}{page === "home" ? <Home onSelect={navigate}/> : page === "diagnostics" ? <DiagnosticsPage status={status} /> : page === "settings" ? <SettingsPage /> : <Placeholder page={page} onSelect={navigate}/>}</main></div>;
 }
 export default App;

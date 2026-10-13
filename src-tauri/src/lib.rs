@@ -1,3 +1,4 @@
+mod app_state;
 mod desktop;
 pub mod ipc;
 mod overlay;
@@ -6,46 +7,141 @@ pub mod storage;
 use tauri::Manager;
 
 #[tauri::command]
-fn overlay_get(app: tauri::AppHandle, window: tauri::WebviewWindow) -> overlay::OverlayView {
-    let mut view = overlay::view(&app);
-    if window.label() != "overlay" {
-        view.draft.clear();
-    }
-    view
+fn overlay_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<overlay::OverlayView> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        ipc::authorize(&window, false)?;
+        ipc::parse_request::<ipc::EmptyParams>(request)?;
+        Ok(app_state::status(&app, window.label() == "overlay").overlay)
+    })();
+    complete("overlay_get", id, result)
 }
 
 #[tauri::command]
 async fn overlay_control(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    action: serde_json::Value,
-) -> Result<(), &'static str> {
-    let action: overlay::OverlayAction =
-        serde_json::from_value(action).map_err(|_| "PA_OVERLAY_INVALID_REQUEST")?;
-    if window.label() == "overlay"
-        && matches!(
-            action,
-            overlay::OverlayAction::Exit | overlay::OverlayAction::SetShortcut { .. }
-        )
-    {
-        return Err("PA_OVERLAY_PERMISSION_DENIED");
+    request: serde_json::Value,
+) -> ipc::Response<()> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        ipc::authorize(&window, false)?;
+        let action = overlay::validate_action(request, window.label() == "overlay")?;
+        let shortcut_change = matches!(action, overlay::OverlayAction::SetShortcut { .. });
+        overlay::apply_with_id(&app, action, id.clone())
+            .map_err(|_| ipc::ErrorCode::OverlayControlFailed)?;
+        if shortcut_change && overlay::view(&app).shortcut_error == Some("PA_SHORTCUT_CONFLICT") {
+            return Err(ipc::ErrorCode::ShortcutConflict);
+        }
+        Ok(())
+    })();
+    complete("overlay_control", id, result)
+}
+
+fn complete<T: serde::Serialize>(
+    command: &'static str,
+    id: String,
+    result: Result<T, ipc::ErrorCode>,
+) -> ipc::Response<T> {
+    eprintln!(
+        "{}",
+        ipc::command_log(command, &id, result.as_ref().err().copied())
+    );
+    ipc::Response::from_result(id, result)
+}
+
+#[tauri::command]
+fn app_get_status(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<app_state::AppStatus> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        ipc::authorize(&window, false)?;
+        ipc::parse_request::<ipc::EmptyParams>(request)?;
+        Ok(app_state::status(&app, window.label() == "overlay"))
+    })();
+    complete("app_get_status", id, result)
+}
+
+// Debug fixture is dynamically authorized only during this project's desktop verification.
+#[cfg(debug_assertions)]
+#[tauri::command]
+async fn ipc_fixture(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Params {
+        action: String,
     }
-    overlay::apply(&app, action)
+    let id = ipc::correlation_id();
+    let result = (|| {
+        ipc::authorize(&window, true)?;
+        if std::env::var("PA_IPC_VERIFY").as_deref() != Ok("1") {
+            return Err(ipc::ErrorCode::PermissionDenied);
+        }
+        let params: Params = ipc::parse_request(request)?;
+        match params.action.as_str() {
+            "create_denied_window" => {
+                tauri::WebviewWindowBuilder::new(
+                    &app,
+                    "ipc-denied",
+                    tauri::WebviewUrl::App("index.html?window=denied".into()),
+                )
+                .visible(false)
+                .build()
+                .map_err(|_| ipc::ErrorCode::OverlayControlFailed)?;
+                Ok(())
+            }
+            "close_denied_window" => {
+                if let Some(window) = app.get_webview_window("ipc-denied") {
+                    window
+                        .destroy()
+                        .map_err(|_| ipc::ErrorCode::OverlayControlFailed)?;
+                }
+                Ok(())
+            }
+            "navigate_remote" => {
+                let url = std::env::var("PA_IPC_REMOTE_URL")
+                    .map_err(|_| ipc::ErrorCode::InvalidRequest)?;
+                let url = url.parse().map_err(|_| ipc::ErrorCode::InvalidRequest)?;
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let _ = window.navigate(url);
+                });
+                Ok(())
+            }
+            "destroy_overlay" => {
+                if let Some(window) = app.get_webview_window("overlay") {
+                    window
+                        .destroy()
+                        .map_err(|_| ipc::ErrorCode::OverlayControlFailed)?;
+                }
+                Ok(())
+            }
+            action => app_state::fixture(&app, action, id.clone()),
+        }
+    })();
+    complete("ipc_fixture", id, result)
 }
 
 #[tauri::command]
 fn desktop_initialize(
     request: serde_json::Value,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, desktop::DesktopState>,
 ) -> ipc::Response<desktop::DesktopReady> {
-    let result = state.initialize(request);
-    if let Err(code) = &result {
-        eprintln!(
-            "{}",
-            serde_json::to_string(&code).expect("fixed error code")
-        );
-    }
-    ipc::Response::from_result(ipc::correlation_id(), result)
+    let id = ipc::correlation_id();
+    let result = ipc::authorize(&window, true).and_then(|_| state.initialize(request));
+    complete("desktop_initialize", id, result)
 }
 
 #[tauri::command]
@@ -97,7 +193,9 @@ pub fn run() {
     let phase0 = state.phase0;
     let result = tauri::Builder::default()
         .manage(state)
+        .manage(app_state::AppState::default())
         .manage(overlay::OverlayState::default())
+        .manage(storage::StorageState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -112,6 +210,24 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
+            #[cfg(debug_assertions)]
+            if std::env::var("PA_IPC_VERIFY").as_deref() == Ok("1") {
+                app.add_capability(r#"{"identifier":"ipc-verify","windows":["main"],"permissions":["allow-ipc-fixture"]}"#)?;
+            }
+            if !phase0 {
+                let storage = app.state::<storage::StorageState>();
+                match app.path().app_data_dir() {
+                    Ok(data_dir) => {
+                        if let Err(failure) = storage.initialize(&data_dir, &ipc::correlation_id()) {
+                            eprintln!("PA_STORAGE_STARTUP_FAILED:{}", failure.public_code());
+                        }
+                    }
+                    Err(_) => {
+                        storage.mark_unavailable("PA_STORAGE_DIRECTORY_FAILED");
+                        eprintln!("PA_STORAGE_STARTUP_FAILED:PA_STORAGE_DIRECTORY_FAILED");
+                    }
+                }
+            }
             if phase0 {
                 app.add_capability(include_str!("../capabilities/phase0.json"))?;
             } else {
@@ -152,8 +268,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             desktop_initialize,
+            app_get_status,
             overlay_get,
             overlay_control,
+            #[cfg(debug_assertions)]
+            ipc_fixture,
             framework_probe,
             phase0_check_open_path
         ])

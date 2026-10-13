@@ -1,13 +1,19 @@
-//! Phase 0.5: connection and migrations only; no business repository or IPC.
+//! Business storage lifecycle, schema migrations, typed repositories and restart recovery.
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use std::{
     fmt, fs,
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub mod probe;
+mod repositories;
+pub use repositories::{
+    AuditEventInput, AuditRepository, CapabilityRepository, ProfileRepository, SettingRecord,
+    SettingsRepository, SnapshotRepository,
+};
 
 pub const DATABASE_NAME: &str = "project-assistant.sqlite3";
 pub const SCHEMA_VERSION: i64 = 1;
@@ -29,6 +35,27 @@ pub struct StorageError {
     pub code: &'static str,
     /// Only a local recovery reference, never SQLite's raw error/query/value.
     pub backup_path: Option<PathBuf>,
+}
+
+impl StorageError {
+    pub fn public_code(&self) -> &'static str {
+        match self.code {
+            "STORAGE_BUSY" => "PA_STORAGE_BUSY",
+            "STORAGE_DIRECTORY_FAILED" => "PA_STORAGE_DIRECTORY_FAILED",
+            "STORAGE_OPEN_FAILED" => "PA_STORAGE_OPEN_FAILED",
+            "STORAGE_SQL_FAILED" => "PA_STORAGE_SQL_FAILED",
+            "STORAGE_CLOCK_FAILED" => "PA_STORAGE_CLOCK_FAILED",
+            "STORAGE_BACKUP_FAILED" => "PA_STORAGE_BACKUP_FAILED",
+            "STORAGE_MIGRATION_FAILED" => "PA_STORAGE_MIGRATION_FAILED",
+            "STORAGE_NEWER_SCHEMA" => "PA_STORAGE_NEWER_SCHEMA",
+            "STORAGE_CORRUPT" => "PA_STORAGE_CORRUPT",
+            "STORAGE_UNRECOGNIZED_SCHEMA" => "PA_STORAGE_UNRECOGNIZED_SCHEMA",
+            "STORAGE_MIGRATION_HISTORY" => "PA_STORAGE_MIGRATION_HISTORY",
+            "STORAGE_MIGRATION_SEQUENCE" => "PA_STORAGE_MIGRATION_SEQUENCE",
+            "STORAGE_FOREIGN_KEY_CHECK" => "PA_STORAGE_FOREIGN_KEY_CHECK",
+            _ => "PA_STORAGE_UNEXPECTED",
+        }
+    }
 }
 
 impl fmt::Display for StorageError {
@@ -60,6 +87,65 @@ impl Storage {
     /// Caller supplies Tauri's app_data_dir (or an owned test subdirectory).
     pub fn open(data_dir: &Path) -> Result<Self, StorageError> {
         Self::open_with(data_dir, MIGRATIONS)
+    }
+
+    /// Mark all local work that could have been active when this process stopped.
+    /// The update and its minimal audit fact are one transaction; no external work is replayed.
+    pub fn recover_on_startup(
+        &mut self,
+        correlation_id: &str,
+    ) -> Result<RecoverySummary, StorageError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|_| error("STORAGE_BUSY"))?;
+        let finished_at = now_ms();
+        let tasks = transaction
+            .execute(
+                "UPDATE tasks SET status = 'interrupted', error_code = 'PA_STORAGE_RESTART_INTERRUPTED', finished_at = ?1 WHERE status IN ('idle', 'preparing', 'running', 'approval_required', 'cancelling')",
+                [finished_at],
+            )
+            .map_err(sql_error)?;
+        let approvals = transaction
+            .execute(
+                "UPDATE approvals SET decision = 'interrupted', decided_at = ?1 WHERE decision = 'pending'",
+                [finished_at],
+            )
+            .map_err(sql_error)?;
+        if tasks > 0 || approvals > 0 {
+            transaction
+                .execute(
+                    "INSERT INTO audit_events (id, occurred_at, correlation_id, event_kind, outcome, error_code, project_id, task_id, approval_id, profile_id, model_id, effort) VALUES (?1, ?2, ?3, 'storage_recovery', 'interrupted', 'PA_STORAGE_RESTART_INTERRUPTED', NULL, NULL, NULL, NULL, NULL, NULL)",
+                    rusqlite::params![
+                        format!("storage-recovery-{correlation_id}"),
+                        finished_at,
+                        correlation_id,
+                    ],
+                )
+                .map_err(sql_error)?;
+        }
+        transaction.commit().map_err(sql_error)?;
+        Ok(RecoverySummary { tasks, approvals })
+    }
+
+    pub fn settings(&mut self) -> SettingsRepository<'_> {
+        SettingsRepository::new(&mut self.connection)
+    }
+
+    pub fn profiles(&mut self) -> ProfileRepository<'_> {
+        ProfileRepository::new(&mut self.connection)
+    }
+
+    pub fn capabilities(&mut self) -> CapabilityRepository<'_> {
+        CapabilityRepository::new(&mut self.connection)
+    }
+
+    pub fn snapshots(&mut self) -> SnapshotRepository<'_> {
+        SnapshotRepository::new(&mut self.connection)
+    }
+
+    pub fn audit(&mut self) -> AuditRepository<'_> {
+        AuditRepository::new(&mut self.connection)
     }
 
     fn open_with(data_dir: &Path, migrations: &[Migration]) -> Result<Self, StorageError> {
@@ -269,6 +355,100 @@ impl Storage {
             .and_then(|file| file.sync_all())
             .map_err(|_| error("STORAGE_BACKUP_FAILED"))?;
         Ok(path)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoverySummary {
+    pub tasks: usize,
+    pub approvals: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageHealth {
+    pub state: &'static str,
+    pub reason_code: Option<&'static str>,
+}
+
+struct StorageRuntime {
+    storage: Option<Storage>,
+    health: StorageHealth,
+}
+
+pub struct StorageState(Mutex<StorageRuntime>);
+
+impl Default for StorageState {
+    fn default() -> Self {
+        Self(Mutex::new(StorageRuntime {
+            storage: None,
+            health: StorageHealth {
+                state: "unavailable",
+                reason_code: Some("PA_STORAGE_NOT_INITIALIZED"),
+            },
+        }))
+    }
+}
+
+impl StorageState {
+    pub fn mark_unavailable(&self, reason_code: &'static str) {
+        if let Ok(mut runtime) = self.0.lock() {
+            runtime.storage = None;
+            runtime.health = StorageHealth {
+                state: "unavailable",
+                reason_code: Some(reason_code),
+            };
+        }
+    }
+
+    pub fn initialize(
+        &self,
+        data_dir: &Path,
+        correlation_id: &str,
+    ) -> Result<RecoverySummary, StorageError> {
+        let mut runtime = self.0.lock().map_err(|_| error("STORAGE_OPEN_FAILED"))?;
+        match Storage::open(data_dir).and_then(|mut storage| {
+            let recovery = storage.recover_on_startup(correlation_id)?;
+            Ok((storage, recovery))
+        }) {
+            Ok((storage, recovery)) => {
+                runtime.storage = Some(storage);
+                runtime.health = StorageHealth {
+                    state: "ready",
+                    reason_code: None,
+                };
+                Ok(recovery)
+            }
+            Err(failure) => {
+                runtime.storage = None;
+                runtime.health = StorageHealth {
+                    state: "unavailable",
+                    reason_code: Some(failure.public_code()),
+                };
+                Err(failure)
+            }
+        }
+    }
+
+    pub fn health(&self) -> StorageHealth {
+        self.0
+            .lock()
+            .map(|runtime| runtime.health)
+            .unwrap_or(StorageHealth {
+                state: "unavailable",
+                reason_code: Some("PA_STORAGE_UNEXPECTED"),
+            })
+    }
+
+    pub fn with_storage<T>(
+        &self,
+        operation: impl FnOnce(&mut Storage) -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        let mut runtime = self.0.lock().map_err(|_| error("STORAGE_SQL_FAILED"))?;
+        let storage = runtime
+            .storage
+            .as_mut()
+            .ok_or_else(|| error("STORAGE_OPEN_FAILED"))?;
+        operation(storage)
     }
 }
 
