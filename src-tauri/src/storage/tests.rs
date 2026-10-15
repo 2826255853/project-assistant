@@ -25,18 +25,20 @@ fn fixture() -> (Fixture, Storage) {
     (directory, storage)
 }
 fn upgrade(sql: &'static str) -> Vec<Migration> {
-    vec![
-        Migration {
-            version: 1,
-            name: "initial",
-            sql: MIGRATIONS[0].sql,
-        },
-        Migration {
-            version: 2,
-            name: "test_only",
-            sql,
-        },
-    ]
+    let mut migrations: Vec<_> = MIGRATIONS
+        .iter()
+        .map(|m| Migration {
+            version: m.version,
+            name: m.name,
+            sql: m.sql,
+        })
+        .collect();
+    migrations.push(Migration {
+        version: SCHEMA_VERSION + 1,
+        name: "test_only",
+        sql,
+    });
+    migrations
 }
 
 #[test]
@@ -70,7 +72,7 @@ fn successful_upgrade_backs_up_committed_wal() {
             .connection
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        2
+        SCHEMA_VERSION + 1
     );
     let backup_path = fs::read_dir(directory.0.join("backups"))
         .unwrap()
@@ -90,7 +92,7 @@ fn successful_upgrade_backs_up_committed_wal() {
         backup
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        1
+        SCHEMA_VERSION
     );
     assert!(
         backup
@@ -136,7 +138,7 @@ fn failed_upgrade_rolls_back_ddl_data_history_and_allows_retry() {
             .query_row("SELECT count(*) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        1
+        SCHEMA_VERSION
     );
     drop(original);
     Storage::open_with(&directory.0, &upgrade("CREATE TABLE retried (id INTEGER);")).unwrap();
@@ -338,6 +340,50 @@ fn checksum_is_stable_across_checkout_line_endings() {
     assert_eq!(
         checksum("SELECT 1;\nSELECT 2;\n"),
         checksum("SELECT 1;\r\nSELECT 2;\r\n")
+    );
+}
+
+#[test]
+fn real_v1_settings_upgrade_preserves_values_and_backs_up_original() {
+    let directory = Fixture::new();
+    let mut old = Storage::open_with(&directory.0, &MIGRATIONS[..1]).unwrap();
+    old.settings()
+        .put_text("v1-search", "search_engine", "google", 7)
+        .unwrap();
+    drop(old);
+    let mut upgraded = Storage::open(&directory.0).unwrap();
+    upgraded
+        .settings()
+        .initialize_defaults(&directory.0)
+        .unwrap();
+    let view = upgraded.settings().read_view().unwrap();
+    assert_eq!(view.revision, 7);
+    assert!(
+        view.values
+            .contains(&crate::settings::Change::SearchEngine("google".into()))
+    );
+    let backup = fs::read_dir(directory.0.join("backups"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let original = Connection::open_with_flags(backup, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(
+        original
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        original
+            .query_row(
+                "SELECT value_text FROM settings WHERE key='search_engine'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "google"
     );
 }
 

@@ -22,7 +22,9 @@
 .settings-form fieldset { display: grid; gap: 12px; padding: 24px; border: 1px solid #dce3e8; background: #fff; }
 .settings-form legend { padding: 0 8px; font-weight: 650; }
 .settings-form label { font-size: 13px; }
-.settings-form select { font: inherit; min-height: 38px; padding: 6px; border: 1px solid #cfd9df; border-radius: 5px; }
+.settings-form select, .settings-form input:not([type="checkbox"]) { font: inherit; min-height: 38px; min-width: 0; width: 100%; padding: 6px; border: 1px solid #cfd9df; border-radius: 5px; }
+.settings-form > button { margin-top: 16px; }
+.settings-form p { margin: 0; color: #607080; font-size: 13px; line-height: 1.6; }
 .settings-form :disabled { cursor: not-allowed; }
 .exit-button { margin-top: 12px; padding: 8px; border: 1px solid #536575; border-radius: 5px; color: #e7edf4; background: transparent; }
 .skip-link { position: absolute; left: 250px; top: -60px; padding: 12px; background: #fff; color: #172333; z-index: 5; }

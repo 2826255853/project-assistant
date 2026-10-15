@@ -52,6 +52,15 @@ $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 
 ## 可重复验证
 
+步骤 1.4 已提供可用设置页：全局设置与常驻开关/快捷键/位置统一保存到 SQLite；修订冲突须重新读取后提交，非法值/写入或快捷键注册失败保持旧值。原常驻 JSON 仅一次性迁移，不再写入。AI 默认值与真实凭据仍不开放。
+
+```powershell
+# 全局设置、回滚/冲突、两种资源模式独立进程退出重启
+npm run verify:settings
+```
+
+记录与人工复核边界见 [步骤 1.4](docs/phase-1/step-1.4.md)，报告位于 `artifacts/phase-1-4/report.json`。托盘回调与显示器缺失注入已纳入自动验收；实际托盘鼠标操作和物理显示器/DPI 变化不记为自动实测通过。
+
 ```powershell
 # 步骤 1.1：构建、Rust/IPC/Codex 离线测试，两种桌面模式的正常/失败/阶段0入口及系统打开回归
 npm run verify:shell
@@ -177,6 +186,7 @@ npm run test:ipc
 - [步骤 1.1：主框架、模块职责与验收记录](docs/phase-1/step-1.1.md)
 - [步骤 1.2：正式 IPC、状态与事件通路验收记录](docs/phase-1/step-1.2.md)
 - [步骤 1.3：正式数据库、仓储与启动恢复验收记录](docs/phase-1/step-1.3.md)
+- [步骤 1.4：全局设置、常驻恢复与验收记录](docs/phase-1/step-1.4.md)
 - [环境基线](docs/phase-0/environment.md)
 - [实验清单](docs/phase-0/experiments.md)
 - [风险登记册](docs/phase-0/risks.md)
@@ -197,6 +207,6 @@ npm run test:ipc
 - [安全边界与威胁测试清单](docs/phase-0/security-checklist.md)
 - [步骤 0.6 验收](docs/phase-0/ipc-security-verification.md)
 
-步骤 1.3（S1-03）已接入正常启动数据库、schema v1 迁移、类型化仓储和启动恢复；数据库失败保持原库并返回固定 storage 原因码。详情见 [验收记录](docs/phase-1/step-1.3.md)。设置 IPC、日志/完整审计、凭据库和真实 provider/Codex 服务仍按后续步骤推进。
+步骤 1.3（S1-03）已接入正常启动数据库、schema v1 迁移、类型化仓储和启动恢复；数据库失败保持原库并返回固定 storage 原因码。详情见 [验收记录](docs/phase-1/step-1.3.md)。步骤 1.4 已追加 schema v2、设置 IPC 与常驻恢复；日志/完整审计、凭据库和真实 provider/Codex 服务仍按后续步骤推进。
 
 步骤 0.3、0.7 及阶段 0 按替代范围通过，允许启动阶段一；生产自管凭据、隔离与恢复仍待实现和验收，见 [阶段门评审](docs/phase-0/phase-gate-review.md)。

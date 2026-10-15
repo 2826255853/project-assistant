@@ -6,12 +6,14 @@ import { API_VERSION } from "./contracts";
 import { isDesktopReady, isProbeReply, parseResponse, unwrap } from "./response";
 import { awaitTransport } from "./transport";
 import { isAppStatus, isOverlayView } from "./state";
+import { isSettingsView } from "./settings";
 
 type Name = keyof ImplementedCommandMap;
 const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMap[K]["data"] } = {
   framework_probe: isProbeReply, desktop_initialize: isDesktopReady,
   app_get_status: isAppStatus, overlay_get: isOverlayView,
   overlay_control: (data): data is null => data === null,
+  settings_get: isSettingsView, settings_update: isSettingsView,
 };
 export async function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]> {
   const wire = await awaitTransport(() => invoke<unknown>(command, { request: { apiVersion: API_VERSION, params } }), options);

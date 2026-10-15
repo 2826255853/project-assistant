@@ -34,6 +34,8 @@ test("IPC permissions are limited to the local main window and explicit commands
   assert.equal(config.remote, undefined);
   assert.notEqual(config.local, false);
   assert.ok(config.permissions.includes("allow-desktop-initialize"));
+  assert.ok(config.permissions.includes("allow-settings-get"));
+  assert.ok(config.permissions.includes("allow-settings-update"));
   assert.ok(!config.permissions.includes("allow-framework-probe"));
   assert.ok(!config.permissions.includes("allow-phase0-check-open-path"));
   assert.ok(!config.permissions.some((p) => JSON.stringify(p).includes("opener:")));
@@ -47,6 +49,8 @@ test("IPC permissions are limited to the local main window and explicit commands
   const overlay = JSON.parse(await readFile(new URL("../../src-tauri/capabilities/overlay.json", import.meta.url), "utf8"));
   assert.deepEqual(overlay.windows, ["overlay"]);
   assert.ok(!overlay.permissions.includes("allow-desktop-initialize"));
+  assert.ok(!overlay.permissions.includes("allow-settings-get"));
+  assert.ok(!overlay.permissions.includes("allow-settings-update"));
   assert.ok(!overlay.permissions.some((p) => /credential|probe|opener/.test(p)));
   for (const capability of [config, overlay]) {
     assert.ok(capability.permissions.includes("allow-app-get-status"));

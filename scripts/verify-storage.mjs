@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 const root = resolve(import.meta.dirname, "..");
 const output = join(root, "artifacts", "storage");
@@ -52,7 +53,7 @@ try {
   const verify = await checkCommand("app-data-restart-process", exe, ["--phase0-storage-probe", "verify", id], 30000);
   report.restart = JSON.parse(verify.stdout.trim());
   assert.equal(report.restart.passed, true);
-  assert.equal(report.restart.schemaVersion, 1);
+  assert.equal(report.restart.schemaVersion, 2);
   assert.equal(report.restart.journalMode, "wal");
   assert.equal(report.restart.usesTauriAppDataDir, true);
   report.processRestartVerified = true;
@@ -62,8 +63,13 @@ try {
 } finally {
   if (ownsFixture) {
     try {
-      const cleanup = await execute(exe, ["--phase0-storage-probe", "cleanup", id], 30000);
-      report.cleanupPassed = cleanup.code === 0 && JSON.parse(cleanup.stdout.trim()).passed === true;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const cleanup = await execute(exe, ["--phase0-storage-probe", "cleanup", id], 30000);
+        await writeFile(join(output, "app-data-cleanup-process.log"), cleanup.stdout + cleanup.stderr);
+        report.cleanupPassed = cleanup.code === 0 && JSON.parse(cleanup.stdout.trim()).passed === true;
+        if (report.cleanupPassed) break;
+        await delay(300);
+      }
     } catch { report.cleanupPassed = false; }
   }
   report.passed = report.processRestartVerified && report.cleanupPassed && !report.error;

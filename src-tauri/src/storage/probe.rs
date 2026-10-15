@@ -191,16 +191,35 @@ pub fn run_cli() -> Option<i32> {
         let directory = app_data.join("phase-0-storage").join(id);
         if mode == "cleanup" {
             if directory.exists() {
-                let resolved_root = app_data
+                // MSIX can virtualize children of an existing app_data_dir while
+                // leaving the parent unvirtualized. Anchor to this probe's dedicated
+                // directory and require an exact direct child, never a broad prefix.
+                let probe_root = app_data.join("phase-0-storage");
+                let metadata = std::fs::symlink_metadata(&probe_root)
+                    .map_err(|_| error("STORAGE_PROBE_CLEANUP_ROOT"))?;
+                if metadata.file_type().is_symlink() {
+                    return Err(error("STORAGE_PROBE_CLEANUP_BOUNDARY"));
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if metadata.file_attributes() & 0x400 != 0 {
+                        return Err(error("STORAGE_PROBE_CLEANUP_BOUNDARY"));
+                    }
+                }
+                let resolved_root = probe_root
                     .canonicalize()
-                    .map_err(|_| error("STORAGE_PROBE_CLEANUP"))?;
+                    .map_err(|_| error("STORAGE_PROBE_CLEANUP_ROOT"))?;
                 let resolved = directory
                     .canonicalize()
-                    .map_err(|_| error("STORAGE_PROBE_CLEANUP"))?;
-                if !resolved.starts_with(resolved_root) {
-                    return Err(error("STORAGE_PROBE_CLEANUP"));
+                    .map_err(|_| error("STORAGE_PROBE_CLEANUP_TARGET"))?;
+                if resolved.parent() != Some(resolved_root.as_path())
+                    || resolved.file_name() != Some(std::ffi::OsStr::new(id))
+                {
+                    return Err(error("STORAGE_PROBE_CLEANUP_BOUNDARY"));
                 }
-                std::fs::remove_dir_all(&resolved).map_err(|_| error("STORAGE_PROBE_CLEANUP"))?;
+                std::fs::remove_dir_all(&resolved)
+                    .map_err(|_| error("STORAGE_PROBE_CLEANUP_DELETE"))?;
             }
             return Ok(json!({"passed": true, "mode": "cleanup", "usesTauriAppDataDir": true}));
         }

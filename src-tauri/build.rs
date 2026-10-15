@@ -3,6 +3,8 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "desktop_initialize",
             "app_get_status",
+            "settings_get",
+            "settings_update",
             "overlay_get",
             "overlay_control",
             "framework_probe",

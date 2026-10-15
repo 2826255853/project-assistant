@@ -35,6 +35,9 @@ export async function verifyIpcDesktop({ evaluate, until, report, debugPort, rec
   }
   const tooLarge = await overlayEval(invoke("overlay_control", { action: "draft", draft: "中".repeat(10923) }));
   assert.equal(tooLarge.error.code, "PA_VALIDATION_INPUT_TOO_LARGE");
+  for (const command of ["settings_get", "settings_update"]) {
+    assert.equal(await overlayEval(invoke(command, {scope:"global"}) + ".then(() => false, () => true)"),true);
+  }
   const after = await evaluate(invoke("app_get_status"));
   assert.equal(after.data.sequence, status.data.sequence);
   assert.equal(after.data.overlay.enabled, true);
@@ -91,7 +94,7 @@ export async function verifyIpcDesktop({ evaluate, until, report, debugPort, rec
   const baseline = await evaluate("({...window.__ipcStats})");
   for (let count = 0; count < 3; count++) {
     await evaluate("document.querySelector('.nav-item[data-page=settings]').click()");
-    await until(() => evaluate("document.querySelector('[data-testid=resident-toggle]')?.disabled"), s => s === false);
+    await until(() => evaluate("document.querySelector('#resident-enabled')?.disabled"), s => s === false);
     await evaluate("document.querySelector('.nav-item[data-page=home]').click()");
     await until(() => evaluate("document.querySelector('.main-area').dataset.page"), s => s === "home");
   }
@@ -114,6 +117,7 @@ export async function verifyIpcDesktop({ evaluate, until, report, debugPort, rec
   try {
     await until(() => evaluate("Boolean(window.__TAURI_INTERNALS__)", deniedSocket), Boolean);
     assert.equal(await evaluate(invoke("app_get_status") + ".then(() => false, () => true)", deniedSocket), true);
+    assert.equal(await evaluate(invoke("settings_get", {scope:"global"}) + ".then(() => false, () => true)", deniedSocket), true);
     assert.equal(await evaluate(invoke("overlay_control", { action: "disable" }) + ".then(() => false, () => true)", deniedSocket), true);
   } finally { deniedSocket.close(); await fixture("close_denied_window"); }
   report.results.push("动态创建的未授权本地 WebView2 窗口被真实 capability 拒绝");
@@ -122,6 +126,7 @@ export async function verifyIpcDesktop({ evaluate, until, report, debugPort, rec
   await until(() => evaluate("document.title"), s => s === "IPC remote fixture");
   await until(() => evaluate("Boolean(window.__TAURI_INTERNALS__)", undefined), Boolean);
   assert.equal(await evaluate(invoke("app_get_status") + ".then(() => false, () => true)"), true);
+  assert.equal(await evaluate(invoke("settings_get", {scope:"global"}) + ".then(() => false, () => true)"), true);
   assert.equal(await evaluate(invoke("overlay_control", { action: "disable" }) + ".then(() => false, () => true)"), true);
   await cdp("Page.navigate", { url: mainUrl });
   await until(() => evaluate("Boolean(document.querySelector('.app-shell'))"), Boolean);

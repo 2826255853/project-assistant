@@ -48,12 +48,15 @@ export type TaskStatus = "idle" | "preparing" | "running" | "approval_required" 
 export interface TaskView { id: string; sessionId: string; projectId: string; status: TaskStatus; snapshot: PublicSnapshot | null; error: AppError | null }
 export type SettingChange =
   | { key: "search_engine"; value: "bing" | "google" }
-  | { key: "editor"; value: { executable: string } }
+  | { key: "editor"; value: { id: "custom"; executable: string } | null }
   | { key: "project_sort"; value: "recent" | "name" }
   | { key: "approval_policy"; value: "ask" } // no permissive/never-ask option in v1
   | { key: "log_level"; value: "error" | "warn" | "info" | "debug" }
   | { key: "summary_retention_days"; value: number }
-  | { key: "ai_defaults"; value: AiSelection };
+  | { key: "ai_defaults"; value: AiSelection | null }
+  | { key: "overlay_enabled"; value: boolean }
+  | { key: "overlay_shortcut"; value: string }
+  | { key: "overlay_position"; value: { x: number; y: number; monitor: string | null; scaleFactor: number } | null };
 export type SettingsScope = { scope: "global" } | { scope: "project"; projectId: string };
 export interface SettingsView { revision: number; values: SettingChange[] }
 export interface AdapterStatus {
@@ -83,6 +86,8 @@ export interface ImplementedCommandMap {
   app_get_status: { params: Record<string, never>; data: AppStatus };
   overlay_get: { params: Record<string, never>; data: OverlayView };
   overlay_control: { params: OverlayAction; data: null };
+  settings_get: { params: SettingsScope; data: SettingsView };
+  settings_update: { params: SettingsScope & { expectedRevision: number; changes: SettingChange[] }; data: SettingsView };
 }
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.

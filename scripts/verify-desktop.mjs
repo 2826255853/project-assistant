@@ -9,14 +9,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { verifyIpcDesktop } from "./ipc/desktop.mjs";
+import { verifySettingsDesktop } from "./ipc/settings-desktop.mjs";
 
 assert.equal(process.platform, "win32", "This test requires Windows and WebView2.");
 assert.ok(process.env.npm_execpath, "Run this script with npm run verify:desktop.");
 const mode = process.argv[2] ?? "dev";
 assert.ok(["dev", "built"].includes(mode), "Expected dev or built.");
 const scenario = process.argv[3] ?? "phase0";
-assert.ok(["phase0", "shell", "shell-error", "ipc"].includes(scenario));
+assert.ok(["phase0", "shell", "shell-error", "ipc", "settings-write", "settings-read", "settings-enabled"].includes(scenario));
 const shell = scenario !== "phase0";
+const settingsScenario = scenario.startsWith("settings-");
 const root = resolve(import.meta.dirname, "..");
 const output = resolve(root, "artifacts", shell ? `shell-${mode}-${scenario}` : `desktop-${mode}`);
 await mkdir(output, { recursive: true });
@@ -27,14 +29,16 @@ await new Promise((resolvePort, reject) => {
 });
 const debugPort = listener.address().port;
 await new Promise((done) => listener.close(done));
-const overlayFixtureDirectory = scenario === "ipc" ? await mkdtemp(resolve(tmpdir(), "project-assistant-ipc-")) : "";
+const sharedFixtureDirectory = settingsScenario ? process.env.PA_SETTINGS_VERIFY_DIR : "";
+assert.ok(!settingsScenario || sharedFixtureDirectory, "Settings scenarios require an isolated shared fixture directory");
+const overlayFixtureDirectory = sharedFixtureDirectory || (shell ? await mkdtemp(resolve(tmpdir(), "project-assistant-ipc-")) : "");
 const remote = createHttpServer((_, response) => { response.end('<!doctype html><title>IPC remote fixture</title><p>Local verification fixture</p>'); });
 if (scenario === "ipc") await new Promise(done => remote.listen(0, "127.0.0.1", done));
 const env = {
   ...process.env,
   PA_DESKTOP_MODE: shell ? "normal" : "phase0",
   PA_SHELL_FAIL_ONCE: scenario === "shell-error" ? "1" : "0",
-  PA_IPC_VERIFY: scenario === "ipc" ? "1" : "0",
+  PA_IPC_VERIFY: shell ? "1" : "0",
   PA_OVERLAY_VERIFY_DIR: overlayFixtureDirectory,
   PA_IPC_REMOTE_URL: scenario === "ipc" ? `http://127.0.0.1:${remote.address().port}/` : "",
   CARGO_TERM_COLOR: "never",
@@ -107,7 +111,7 @@ try {
     return result.result.value;
   }
   let wire;
-  if (shell) {
+  if (shell && !settingsScenario) {
     if (scenario === "shell-error") {
       const error = await until(() => evaluate("document.querySelector('[data-testid=startup-error]')?.textContent"), Boolean);
       assert.match(error, /PA_DESKTOP_INITIALIZATION_FAILED/);
@@ -148,9 +152,9 @@ try {
       await until(() => evaluate("document.querySelector('.main-area')?.dataset.page"), (current) => current === page);
       assert.equal(await evaluate("document.querySelector('nav [aria-current=page]').dataset.page"), page);
       assert.equal(await evaluate("document.activeElement.id"), "page-heading");
-      if (page !== "home") assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=state-unavailable]'))"), true);
+      if (page !== "home" && page !== "settings") assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=state-unavailable]'))"), true);
       if (page === "ai") assert.equal(await evaluate("document.querySelectorAll('input').length"), 0);
-      if (page === "settings") assert.equal(await evaluate("document.querySelector('.settings-form fieldset').disabled"), true);
+      if (page === "settings") await until(() => evaluate("document.querySelector('.settings-form fieldset')?.disabled"), value => value === false);
     }
     assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true);
     report.results.push("项目/AI/设置/服务状态/概览导航和焦点正确；未就绪表单禁用，无秘密输入");
@@ -221,6 +225,8 @@ try {
       });
     }
     if (scenario === "shell-error") await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'disable' } } })");
+  } else if (settingsScenario) {
+    await verifySettingsDesktop({ evaluate, until, report, scenario, cdp, output });
   } else {
   await until(() => evaluate("Boolean(document.querySelector('#probe-message'))"), Boolean);
   assert.equal(await evaluate("document.querySelector('h1').textContent"), "桌面框架验证");
@@ -270,7 +276,7 @@ try {
   // Match the exact executable path, then send normal WM_CLOSE via CloseMainWindow.
   const exe = resolve(root, "src-tauri", "target", "debug", "project-assistant.exe");
   const psPath = `'${exe.replaceAll("'", "''")}'`;
-  const useExitButton = shell && ["shell", "ipc"].includes(scenario);
+  const useExitButton = shell && (["shell", "ipc"].includes(scenario) || settingsScenario);
   if (useExitButton) await evaluate("document.querySelector('.exit-button').click()");
   const close = spawnSync("powershell.exe", ["-NoProfile", "-Command", `
     $p = @(Get-Process -Name 'project-assistant' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ${psPath} });
@@ -311,7 +317,7 @@ try {
   if (child.exitCode === null && child.pid) {
     spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
   }
-  if (overlayFixtureDirectory) await rm(overlayFixtureDirectory, { recursive: true, force: true });
+  if (overlayFixtureDirectory && !sharedFixtureDirectory) await rm(overlayFixtureDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   log.end();
   await writeFile(resolve(output, "report.json"), JSON.stringify(report, null, 2) + "\n");
 }

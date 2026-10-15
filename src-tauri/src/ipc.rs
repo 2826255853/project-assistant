@@ -23,10 +23,23 @@ pub enum ErrorCategory {
     Conflict,
     Compatibility,
     Internal,
+    Storage,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub enum ErrorCode {
+    #[serde(rename = "PA_SETTINGS_INVALID_VALUE")]
+    SettingsInvalidValue,
+    #[serde(rename = "PA_CONFLICT_REVISION")]
+    RevisionConflict,
+    #[serde(rename = "PA_SETTINGS_CORRUPT")]
+    SettingsCorrupt,
+    #[serde(rename = "PA_SETTINGS_STORAGE_FAILED")]
+    SettingsStorageFailed,
+    #[serde(rename = "PA_SETTINGS_RECOVERY_FAILED")]
+    SettingsRecoveryFailed,
+    #[serde(rename = "PA_SETTINGS_AI_UNAVAILABLE")]
+    SettingsAiUnavailable,
     #[serde(rename = "PA_IPC_INVALID_REQUEST")]
     InvalidRequest,
     #[serde(rename = "PA_IPC_VERSION_UNSUPPORTED")]
@@ -60,6 +73,36 @@ pub struct AppError {
 impl ErrorCode {
     pub fn public(self) -> AppError {
         let (category, message, suggestion) = match self {
+            Self::SettingsInvalidValue => (
+                ErrorCategory::Validation,
+                "设置值无效。",
+                "请检查允许值、摘要期限和编辑器绝对路径后重试。",
+            ),
+            Self::RevisionConflict => (
+                ErrorCategory::Conflict,
+                "设置已被其他入口修改。",
+                "请先重新读取设置，再确认并提交；不会自动覆盖。",
+            ),
+            Self::SettingsCorrupt => (
+                ErrorCategory::Storage,
+                "本机设置数据损坏。",
+                "原值已保留，请退出应用并按存储恢复说明检查数据库或旧设置文件。",
+            ),
+            Self::SettingsStorageFailed => (
+                ErrorCategory::Storage,
+                "设置读取或保存失败。",
+                "请检查本机存储和权限后重试；原设置未被覆盖。",
+            ),
+            Self::SettingsRecoveryFailed => (
+                ErrorCategory::Internal,
+                "常驻设置恢复失败。",
+                "请明确退出后重启应用，核对设置与常驻入口状态。",
+            ),
+            Self::SettingsAiUnavailable => (
+                ErrorCategory::Compatibility,
+                "AI 默认配置服务尚未启用。",
+                "请等待配置服务就绪；当前保持未配置。",
+            ),
             Self::InvalidRequest => (
                 ErrorCategory::Validation,
                 "请求格式无效。",

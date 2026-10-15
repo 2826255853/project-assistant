@@ -180,6 +180,28 @@ pub fn status(app: &tauri::AppHandle, private_draft: bool) -> AppStatus {
     let state = app.state::<AppState>();
     let data = state.0.lock().unwrap();
     let mut result = data.snapshot(overlay::view(app), private_draft, storage_state(app));
+    if !app.state::<crate::desktop::DesktopState>().phase0 {
+        let failure = *app
+            .state::<crate::settings::SettingsState>()
+            .failure
+            .lock()
+            .unwrap();
+        let settings = result
+            .services
+            .iter_mut()
+            .find(|s| s.id == "settings")
+            .unwrap();
+        settings.state = if failure.is_none() && storage_state(app).state == "ready" {
+            "ready"
+        } else {
+            "unavailable"
+        };
+        settings.reason_code = failure.map(|code| match code {
+            ipc::ErrorCode::SettingsCorrupt => "PA_SETTINGS_CORRUPT",
+            ipc::ErrorCode::SettingsRecoveryFailed => "PA_SETTINGS_RECOVERY_FAILED",
+            _ => "PA_SETTINGS_STORAGE_FAILED",
+        });
+    }
     if app.state::<crate::desktop::DesktopState>().phase0 {
         let service = result
             .services

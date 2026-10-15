@@ -2,7 +2,7 @@ use super::{StorageError, error, now_ms, sql_error};
 use rusqlite::{Connection, params};
 
 pub struct SettingsRepository<'a> {
-    connection: &'a mut Connection,
+    pub(crate) connection: &'a mut Connection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

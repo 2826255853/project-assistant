@@ -10,13 +10,14 @@ use std::{
 
 pub mod probe;
 mod repositories;
+mod settings;
 pub use repositories::{
     AuditEventInput, AuditRepository, CapabilityRepository, ProfileRepository, SettingRecord,
     SettingsRepository, SnapshotRepository,
 };
 
 pub const DATABASE_NAME: &str = "project-assistant.sqlite3";
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 struct Migration {
     version: i64,
@@ -24,11 +25,18 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial",
-    sql: include_str!("../../migrations/0001_initial.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        sql: include_str!("../../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "settings",
+        sql: include_str!("../../migrations/0002_settings.sql"),
+    },
+];
 
 #[derive(Debug)]
 pub struct StorageError {

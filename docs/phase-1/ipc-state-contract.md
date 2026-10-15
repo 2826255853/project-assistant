@@ -39,3 +39,12 @@ ccSwitch 固定返回 `{management:user_manual,integration:disabled,readSupporte
 统一调用默认等待 8 秒，允许调用方设置 timeoutMs 和 AbortSignal；已取消的 signal 不发请求。超时返回固定 `PA_IPC_TIMEOUT`，停止等待返回 `PA_IPC_CANCELLED`，底层异常转固定 transport 错误。超时/停止等待不等于服务端操作取消，已发出的变更不自动重发；调用方通过 app_get_status 查询实际状态。同步 overlay 控制返回最终 null；关闭窗口控制不创建虚假的 operationId。
 
 未来长操作必须返回 OperationReceipt，真实取消通过 operation_cancel，receipt 的 accepted 仅代表收到；最终结果由 operation_get 查询及 operation_completed 事件确定。操作可超时/取消，仍需服务端清理或回滚后确定终态；断连不可重发 provider_switch/task_start。相关 DTO 保留在 CommandMap 中，当前没有注册或授权这些未实现服务；本步骤验证调用等待超时/取消以及权威查询恢复，不宣称真实后台长操作已通过。
+## 步骤 1.4 设置契约补充（2026-10-13）
+
+`settings_get({scope:"global"})` 与 `settings_update({scope:"global", expectedRevision, changes})` 已开放给本地 main，沿用 IPC v1 信封、关联 ID 和固定错误。overlay 无完整设置权限，启停仅通过既有受限动作进入同一后端事务。项目范围暂因缺少阶段 2 授权入口拒绝。
+
+返回 `SettingsView={revision,values}`，values 完整包含 search_engine、editor、project_sort、approval_policy、log_level、summary_retention_days、ai_defaults、overlay_enabled、overlay_shortcut、overlay_position。editor 为 null 或 `{id:"custom",executable}`；ai_defaults 目前仅 null；位置为 null 或 `{x,y,monitor,scaleFactor}`。摘要期限不会开启采集。
+
+expectedRevision 作用于整个全局设置批次；未知字段/键、重复键、非法值、冲突或 SQL/快捷键注册失败均拒绝整个事务。成功递增修订并发送无载荷 app_state_changed；位置实际变化也递增，故编辑表单必须保留旧修订并处理冲突。PA_CONFLICT_REVISION 要求用户先重读再提交；不自动覆盖。
+
+错误：PA_SETTINGS_INVALID_VALUE、PA_SETTINGS_CORRUPT、PA_SETTINGS_STORAGE_FAILED、PA_SETTINGS_RECOVERY_FAILED、PA_SETTINGS_AI_UNAVAILABLE、PA_CONFLICT_REVISION，以及已有 IPC/快捷键错误。状态服务 settings 已可 ready；损坏/启动失败返回 unavailable，不回显错误输入、SQL 或原始异常。

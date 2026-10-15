@@ -3,11 +3,50 @@ mod desktop;
 pub mod ipc;
 mod overlay;
 pub mod safety;
+mod settings;
 pub mod storage;
 use tauri::Manager;
 
 #[tauri::command]
-fn overlay_get(
+async fn settings_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<settings::View> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        ipc::authorize(&window, true)?;
+        let scope: settings::Scope = ipc::parse_request(request)?;
+        scope.authorize()?;
+        settings::get(&app)
+    })();
+    complete("settings_get", id, result)
+}
+
+#[tauri::command]
+async fn settings_update(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<settings::View> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        let params = ipc::parse_request(request)?;
+        settings::update(&app, params, id.clone())
+    })();
+    complete("settings_update", id, result)
+}
+
+#[tauri::command]
+async fn overlay_get(
     request: serde_json::Value,
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -32,8 +71,7 @@ async fn overlay_control(
         ipc::authorize(&window, false)?;
         let action = overlay::validate_action(request, window.label() == "overlay")?;
         let shortcut_change = matches!(action, overlay::OverlayAction::SetShortcut { .. });
-        overlay::apply_with_id(&app, action, id.clone())
-            .map_err(|_| ipc::ErrorCode::OverlayControlFailed)?;
+        overlay::apply_with_id(&app, action, id.clone())?;
         if shortcut_change && overlay::view(&app).shortcut_error == Some("PA_SHORTCUT_CONFLICT") {
             return Err(ipc::ErrorCode::ShortcutConflict);
         }
@@ -55,7 +93,7 @@ fn complete<T: serde::Serialize>(
 }
 
 #[tauri::command]
-fn app_get_status(
+async fn app_get_status(
     request: serde_json::Value,
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -90,6 +128,14 @@ async fn ipc_fixture(
         }
         let params: Params = ipc::parse_request(request)?;
         match params.action.as_str() {
+            "tray_disable" => overlay::tray_action(&app, "disable"),
+            "tray_enable" => overlay::tray_action(&app, "enable"),
+            "settings_fail_write" | "settings_restore_write" => {
+                let fail = params.action == "settings_fail_write";
+                app.state::<storage::StorageState>().with_storage(|storage| {
+                    storage.connection.execute_batch(if fail { "CREATE TRIGGER fail_settings_verify BEFORE UPDATE ON resident_preferences BEGIN SELECT RAISE(ABORT,'synthetic-secret-DO-NOT-LOG'); END;" } else { "DROP TRIGGER fail_settings_verify;" }).map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })
+                }).map_err(|_| ipc::ErrorCode::SettingsStorageFailed)
+            }
             "create_denied_window" => {
                 tauri::WebviewWindowBuilder::new(
                     &app,
@@ -196,6 +242,7 @@ pub fn run() {
         .manage(app_state::AppState::default())
         .manage(overlay::OverlayState::default())
         .manage(storage::StorageState::default())
+        .manage(settings::SettingsState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -216,11 +263,17 @@ pub fn run() {
             }
             if !phase0 {
                 let storage = app.state::<storage::StorageState>();
-                match app.path().app_data_dir() {
+                let data_dir = app.path().app_data_dir();
+                #[cfg(debug_assertions)]
+                let data_dir = if std::env::var("PA_IPC_VERIFY").as_deref() == Ok("1") {
+                    std::env::var_os("PA_OVERLAY_VERIFY_DIR").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).map(Ok).unwrap_or(data_dir)
+                } else { data_dir };
+                match data_dir {
                     Ok(data_dir) => {
                         if let Err(failure) = storage.initialize(&data_dir, &ipc::correlation_id()) {
                             eprintln!("PA_STORAGE_STARTUP_FAILED:{}", failure.public_code());
                         }
+                        settings::initialize(app.handle(), &data_dir);
                     }
                     Err(_) => {
                         storage.mark_unavailable("PA_STORAGE_DIRECTORY_FAILED");
@@ -261,7 +314,8 @@ pub fn run() {
                     });
                 }
                 tauri::WindowEvent::Moved { .. } if window.label() == "overlay" => {
-                    let _ = overlay::persist_preferences(&app);
+                    let app = app.clone();
+                    std::thread::spawn(move || { let _ = overlay::persist_preferences(&app); });
                 }
                 _ => {}
             }
@@ -269,6 +323,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop_initialize,
             app_get_status,
+            settings_get,
+            settings_update,
             overlay_get,
             overlay_control,
             #[cfg(debug_assertions)]

@@ -1,7 +1,5 @@
-//! Resident entry lifecycle and preferences; business settings belong to step 1.4.
+//! Resident entry lifecycle; all persistent preferences use the SQLite settings service.
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -21,17 +19,10 @@ pub struct OverlayView {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-struct StoredPosition {
-    x: i32,
-    y: i32,
-    monitor: Option<String>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
 struct OverlayPreferences {
     enabled: bool,
     shortcut: String,
-    position: Option<StoredPosition>,
+    position: Option<crate::settings::Position>,
 }
 
 impl Default for OverlayPreferences {
@@ -44,7 +35,7 @@ impl Default for OverlayPreferences {
     }
 }
 
-pub struct OverlayState(pub Mutex<OverlayView>, Mutex<()>, Mutex<OverlayPreferences>);
+pub struct OverlayState(pub Mutex<OverlayView>, Mutex<OverlayPreferences>);
 impl Default for OverlayState {
     fn default() -> Self {
         Self(
@@ -57,7 +48,6 @@ impl Default for OverlayState {
                 draft: String::new(),
                 tray_ready: false,
             }),
-            Mutex::new(()),
             Mutex::new(OverlayPreferences::default()),
         )
     }
@@ -81,77 +71,100 @@ pub fn view(app: &tauri::AppHandle) -> OverlayView {
     app.state::<OverlayState>().0.lock().unwrap().clone()
 }
 
-fn preferences_path(app: &tauri::AppHandle) -> Result<PathBuf, &'static str> {
-    #[cfg(debug_assertions)]
-    if std::env::var("PA_IPC_VERIFY").as_deref() == Ok("1") {
-        if let Some(directory) = std::env::var_os("PA_OVERLAY_VERIFY_DIR") {
-            return Ok(PathBuf::from(directory).join("overlay-settings.json"));
-        }
-    }
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "PA_OVERLAY_SETTINGS_PATH_FAILED")?
-        .join("overlay-settings.json"))
-}
-
 fn load_preferences(app: &tauri::AppHandle) {
-    let Ok(path) = preferences_path(app) else {
+    let failure = *app
+        .state::<crate::settings::SettingsState>()
+        .failure
+        .lock()
+        .unwrap();
+    let result = crate::settings::get(app);
+    if failure.is_some() || result.is_err() {
+        let state = app.state::<OverlayState>();
+        state.0.lock().unwrap().enabled = false;
+        state.0.lock().unwrap().window_error = Some("PA_SETTINGS_UNAVAILABLE");
         return;
-    };
-    let Ok(contents) = fs::read_to_string(path) else {
-        return;
-    };
-    let Ok(preferences) = serde_json::from_str::<OverlayPreferences>(&contents) else {
-        return;
+    }
+    let (enabled, shortcut, position) = result.unwrap().resident();
+    let preferences = OverlayPreferences {
+        enabled,
+        shortcut,
+        position,
     };
     let state = app.state::<OverlayState>();
-    *state.2.lock().unwrap() = preferences.clone();
+    *state.1.lock().unwrap() = preferences.clone();
     let mut view = state.0.lock().unwrap();
     view.enabled = preferences.enabled;
     view.shortcut = preferences.shortcut;
 }
 
-pub fn persist_preferences(app: &tauri::AppHandle) -> Result<(), &'static str> {
-    let path = preferences_path(app)?;
-    let state = app.state::<OverlayState>();
-    let mut preferences = state.2.lock().unwrap().clone();
-    let view = state.0.lock().unwrap().clone();
-    preferences.enabled = view.enabled;
-    preferences.shortcut = view.shortcut;
+pub fn persist_preferences(app: &tauri::AppHandle) -> Result<(), crate::ipc::ErrorCode> {
+    crate::settings::save_position(app)
+}
+
+pub fn sync_position(app: &tauri::AppHandle, position: crate::settings::Position) {
+    app.state::<OverlayState>().1.lock().unwrap().position = Some(position);
+}
+
+pub fn sample_position(app: &tauri::AppHandle) -> Option<crate::settings::Position> {
+    let mut position_value = None;
     if let Some(window) = app.get_webview_window("overlay") {
         if let Ok(position) = window.outer_position() {
-            let monitor = window
-                .current_monitor()
-                .ok()
-                .flatten()
-                .and_then(|value| value.name().map(|name| name.to_owned()));
-            preferences.position = Some(StoredPosition {
+            let monitor = window.current_monitor().ok().flatten();
+            position_value = Some(crate::settings::Position {
                 x: position.x,
                 y: position.y,
-                monitor,
+                monitor: monitor.as_ref().and_then(|m| m.name().cloned()),
+                scale_factor: monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0),
             });
         }
     }
-    let contents =
-        serde_json::to_vec_pretty(&preferences).map_err(|_| "PA_OVERLAY_SETTINGS_WRITE_FAILED")?;
-    let directory = path.parent().ok_or("PA_OVERLAY_SETTINGS_PATH_FAILED")?;
-    fs::create_dir_all(directory).map_err(|_| "PA_OVERLAY_SETTINGS_WRITE_FAILED")?;
-    fs::write(path, contents).map_err(|_| "PA_OVERLAY_SETTINGS_WRITE_FAILED")?;
-    *state.2.lock().unwrap() = preferences;
-    Ok(())
+    position_value
 }
 
 fn restore_position(app: &tauri::AppHandle, window: &WebviewWindow) -> tauri::Result<()> {
     let position = app
         .state::<OverlayState>()
-        .2
+        .1
         .lock()
         .unwrap()
         .position
         .clone();
     if let Some(position) = position {
-        window.set_position(tauri::PhysicalPosition::new(position.x, position.y))?;
+        let monitors = window.available_monitors()?;
+        let monitor = monitors
+            .iter()
+            .find(|m| m.name() == position.monitor.as_ref())
+            .cloned()
+            .or(window.primary_monitor()?);
+        if let Some(monitor) = monitor {
+            let area = monitor.work_area();
+            let found = monitor.name() == position.monitor.as_ref();
+            let size = window.outer_size()?;
+            let ratio = monitor.scale_factor() / position.scale_factor;
+            let (x, y) = if found {
+                (
+                    area.position.x.saturating_add(
+                        ((position.x as f64 - area.position.x as f64) * ratio) as i32,
+                    ),
+                    area.position.y.saturating_add(
+                        ((position.y as f64 - area.position.y as f64) * ratio) as i32,
+                    ),
+                )
+            } else {
+                (
+                    area.position
+                        .x
+                        .saturating_add(area.size.width.saturating_sub(size.width + 24) as i32),
+                    area.position
+                        .y
+                        .saturating_add(area.size.height.saturating_sub(size.height + 100) as i32),
+                )
+            };
+            window.set_position(tauri::PhysicalPosition::new(
+                clamp_axis(x, area.position.x, area.size.width, size.width),
+                clamp_axis(y, area.position.y, area.size.height, size.height),
+            ))?;
+        }
     } else if let Some(monitor) = window.primary_monitor()? {
         let area = monitor.work_area();
         let size = window.outer_size()?;
@@ -285,7 +298,72 @@ fn show_entry(app: &tauri::AppHandle, expanded: bool, focus: bool) -> tauri::Res
     }
     app.state::<OverlayState>().0.lock().unwrap().window_error =
         top.err().map(|_| "PA_OVERLAY_TOPMOST_FAILED");
-    let _ = persist_preferences(app);
+    Ok(())
+}
+
+// Called under the settings writer lock, before SQLite commits. The caller restores
+// the old preferences on any window/registration/commit failure.
+pub fn apply_settings(
+    app: &tauri::AppHandle,
+    next: &crate::settings::View,
+    expanded: bool,
+) -> Result<(), crate::ipc::ErrorCode> {
+    use crate::ipc::ErrorCode;
+    let (enabled, shortcut, position) = next.resident();
+    let old = view(app);
+    let shortcut_changed = old
+        .shortcut
+        .parse::<tauri_plugin_global_shortcut::Shortcut>()
+        .ok()
+        != shortcut
+            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            .ok();
+    if (enabled || shortcut != old.shortcut)
+        && !app.global_shortcut().is_registered(shortcut.as_str())
+    {
+        if app.global_shortcut().register(shortcut.as_str()).is_err() {
+            app.state::<OverlayState>().0.lock().unwrap().shortcut_error =
+                Some("PA_SHORTCUT_CONFLICT");
+            return Err(ErrorCode::ShortcutConflict);
+        }
+    }
+    let state = app.state::<OverlayState>();
+    let position_changed = state.1.lock().unwrap().position != position;
+    *state.1.lock().unwrap() = OverlayPreferences {
+        enabled,
+        shortcut: shortcut.clone(),
+        position,
+    };
+    {
+        let mut view = state.0.lock().unwrap();
+        view.enabled = enabled;
+        view.expanded = enabled && expanded;
+        view.shortcut = shortcut.clone();
+        view.shortcut_error = None;
+    }
+    let window = ensure_window(app).map_err(|_| ErrorCode::OverlayControlFailed)?;
+    if position_changed {
+        restore_position(app, &window).map_err(|_| ErrorCode::OverlayControlFailed)?;
+    }
+    if enabled {
+        show_entry(app, expanded, false).map_err(|_| ErrorCode::OverlayControlFailed)?;
+        if view(app).window_error.is_some() {
+            return Err(ErrorCode::OverlayControlFailed);
+        }
+    } else {
+        window.hide().map_err(|_| ErrorCode::OverlayControlFailed)?;
+        show_main(app);
+    }
+    if shortcut_changed && app.global_shortcut().is_registered(old.shortcut.as_str()) {
+        app.global_shortcut()
+            .unregister(old.shortcut.as_str())
+            .map_err(|_| ErrorCode::SettingsRecoveryFailed)?;
+    }
+    if !enabled && app.global_shortcut().is_registered(shortcut.as_str()) {
+        app.global_shortcut()
+            .unregister(shortcut.as_str())
+            .map_err(|_| ErrorCode::SettingsRecoveryFailed)?;
+    }
     Ok(())
 }
 
@@ -313,7 +391,6 @@ fn register_shortcut(app: &tauri::AppHandle, candidate: &str) {
     } else {
         app.state::<OverlayState>().0.lock().unwrap().shortcut_error = None;
     }
-    let _ = persist_preferences(app);
 }
 
 pub fn show_main(app: &tauri::AppHandle) {
@@ -323,7 +400,19 @@ pub fn show_main(app: &tauri::AppHandle) {
     }
 }
 
-pub fn apply(app: &tauri::AppHandle, action: OverlayAction) -> Result<(), &'static str> {
+pub fn tray_action(app: &tauri::AppHandle, id: &str) -> Result<(), crate::ipc::ErrorCode> {
+    let action = match id {
+        "expand" => OverlayAction::Expand,
+        "enable" => OverlayAction::Enable,
+        "disable" => OverlayAction::Disable,
+        "main" => OverlayAction::OpenMain,
+        "exit" => OverlayAction::Exit,
+        _ => return Err(crate::ipc::ErrorCode::InvalidRequest),
+    };
+    apply(app, action)
+}
+
+pub fn apply(app: &tauri::AppHandle, action: OverlayAction) -> Result<(), crate::ipc::ErrorCode> {
     apply_with_id(app, action, crate::ipc::correlation_id())
 }
 
@@ -331,47 +420,62 @@ pub fn apply_with_id(
     app: &tauri::AppHandle,
     action: OverlayAction,
     correlation_id: String,
-) -> Result<(), &'static str> {
-    let state = app.state::<OverlayState>();
-    let _operation = state.1.lock().unwrap();
+) -> Result<(), crate::ipc::ErrorCode> {
+    use crate::{ipc::ErrorCode, settings::Change};
+    if matches!(action, OverlayAction::Expand) && !view(app).enabled {
+        crate::settings::change_resident(app, vec![Change::OverlayEnabled(true)])?;
+    }
+    // Persistent actions always go through the settings transaction; do not hold
+    // the window lock while calling back into that service.
+    match &action {
+        OverlayAction::Enable => {
+            return crate::settings::change_resident(app, vec![Change::OverlayEnabled(true)]);
+        }
+        OverlayAction::Disable => {
+            return crate::settings::change_resident(app, vec![Change::OverlayEnabled(false)]);
+        }
+        OverlayAction::SetShortcut { shortcut } => {
+            return crate::settings::change_resident(
+                app,
+                vec![Change::OverlayShortcut(shortcut.clone())],
+            );
+        }
+        _ => {}
+    }
+    if matches!(action, OverlayAction::Exit) {
+        let _ = persist_preferences(app);
+    }
+    let state = app.state::<crate::settings::SettingsState>();
+    let operation = state.operation.lock().unwrap();
     match action {
         OverlayAction::Exit => {
-            let _ = persist_preferences(app);
             let _ = app.global_shortcut().unregister_all();
             app.exit(0);
             return Ok(());
         }
         OverlayAction::OpenMain => show_main(app),
-        OverlayAction::SetShortcut { shortcut } => register_shortcut(app, &shortcut),
+        OverlayAction::SetShortcut { .. } | OverlayAction::Enable | OverlayAction::Disable => {
+            unreachable!()
+        }
         OverlayAction::Draft { draft } => {
             if draft.len() > 32768 {
-                return Err("PA_OVERLAY_DRAFT_TOO_LARGE");
+                return Err(ErrorCode::InputTooLarge);
             }
             app.state::<OverlayState>().0.lock().unwrap().draft = draft;
             crate::app_state::publish(app, correlation_id);
             return Ok(());
         }
-        OverlayAction::Disable => {
-            app.state::<OverlayState>().0.lock().unwrap().enabled = false;
-            app.state::<OverlayState>().0.lock().unwrap().expanded = false;
-            let _ = app.global_shortcut().unregister_all();
-            if let Some(window) = app.get_webview_window("overlay") {
-                let _ = window.hide();
-            }
-            // Keep a reachable main window after disabling the last visible entry.
-            show_main(app);
-            let _ = persist_preferences(app);
-        }
-        OverlayAction::Expand
-        | OverlayAction::Collapse
-        | OverlayAction::Enable
-        | OverlayAction::RepairPosition => {
+        OverlayAction::Expand | OverlayAction::Collapse | OverlayAction::RepairPosition => {
             if matches!(action, OverlayAction::RepairPosition) {
                 if let Some(window) = app.get_webview_window("overlay") {
-                    correct_position(&window).map_err(|_| "PA_OVERLAY_WINDOW_FAILED")?;
+                    correct_position(&window).map_err(|_| ErrorCode::OverlayControlFailed)?;
                 }
+                drop(operation);
                 persist_preferences(app)?;
                 return Ok(());
+            }
+            if !view(app).enabled {
+                return Err(ErrorCode::OverlayControlFailed);
             }
             let expanded = matches!(action, OverlayAction::Expand);
             {
@@ -384,7 +488,7 @@ pub fn apply_with_id(
                 app.state::<OverlayState>().0.lock().unwrap().window_error =
                     Some("PA_OVERLAY_WINDOW_FAILED");
                 crate::app_state::publish(app, correlation_id);
-                return Err("PA_OVERLAY_WINDOW_FAILED");
+                return Err(ErrorCode::OverlayControlFailed);
             }
             let shortcut = view(app).shortcut;
             register_shortcut(app, &shortcut);
@@ -399,7 +503,9 @@ pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
     let window = ensure_window(app)?;
     restore_position(app, &window)?;
     if view(app).enabled {
-        let _ = apply(app, OverlayAction::Enable);
+        let shortcut = view(app).shortcut;
+        register_shortcut(app, &shortcut);
+        let _ = show_entry(app, false, false);
     }
     let expand = tauri::menu::MenuItem::with_id(app, "expand", "展开对话", true, None::<&str>)?;
     let enable = tauri::menu::MenuItem::with_id(app, "enable", "启用常驻入口", true, None::<&str>)?;
@@ -412,18 +518,17 @@ pub fn setup(app: &tauri::AppHandle) -> tauri::Result<()> {
         .tooltip("Project Assistant")
         .menu(&menu)
         .on_menu_event(|app, event| {
-            let action = match event.id.as_ref() {
-                "expand" => OverlayAction::Expand,
-                "enable" => OverlayAction::Enable,
-                "disable" => OverlayAction::Disable,
-                "main" => OverlayAction::OpenMain,
-                "exit" => OverlayAction::Exit,
-                _ => return,
-            };
+            let id = event.id.as_ref().to_owned();
             // Window rebuilding must not block the Windows event loop.
             let app = app.clone();
             std::thread::spawn(move || {
-                let _ = apply(&app, action);
+                if let Err(code) = tray_action(&app, &id) {
+                    *app.state::<crate::settings::SettingsState>()
+                        .failure
+                        .lock()
+                        .unwrap() = Some(code);
+                    publish(&app);
+                }
             });
         });
     if let Some(icon) = app.default_window_icon() {

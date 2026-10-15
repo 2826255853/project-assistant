@@ -11,6 +11,7 @@
     "verify:desktop": "node scripts/verify-desktop.mjs",
     "verify:shell": "node scripts/verify-shell.mjs",
     "verify:state": "node scripts/verify-state.mjs",
+    "verify:settings": "node scripts/verify-settings.mjs",
     "verify:git": "node scripts/verify-git.mjs",
     "verify:system-open": "node scripts/verify-system-open.mjs",
     "verify:storage": "node scripts/verify-storage.mjs",
