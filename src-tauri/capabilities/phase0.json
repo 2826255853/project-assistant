@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "phase0",
+  "description": "Debug-only explicit phase 0 fixture permissions",
+  "windows": ["main"],
+  "permissions": [
+    "allow-framework-probe",
+    "allow-phase0-check-open-path",
+    { "identifier": "opener:allow-open-path", "allow": [{ "path": "$TEMP/phase-0-system-open/**" }] },
+    { "identifier": "opener:allow-open-url", "allow": [{ "url": "http://127.0.0.1:*/*" }] }
+  ]
+}

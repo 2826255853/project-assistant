@@ -1,0 +1,4 @@
+.error-notice { margin: 12px 0; padding: 12px 14px; border: 1px solid #dbb6b8; border-radius: 5px; background: #fff5f5; color: #862830; font-size: 13px; line-height: 1.6; text-align: left; overflow-wrap: anywhere; }
+.error-notice p { margin: 4px 0; }
+.error-notice .error-correlation { font-size: 12px; }
+.error-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }

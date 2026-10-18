@@ -1,0 +1,6 @@
+{
+  "identifier": "overlay",
+  "description": "Owned resident window: lifecycle and in-memory draft only",
+  "windows": ["overlay"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "core:window:allow-is-visible", "core:window:allow-is-always-on-top", "core:window:allow-start-dragging", "allow-app-get-status", "allow-overlay-get", "allow-overlay-control"]
+}
