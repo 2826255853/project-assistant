@@ -20,6 +20,7 @@ pub struct Request<T> {
 pub enum ErrorCategory {
     Validation,
     Permission,
+    Environment,
     Conflict,
     Compatibility,
     Internal,
@@ -64,6 +65,18 @@ pub enum ErrorCode {
     ShortcutInvalid,
     #[serde(rename = "PA_SHORTCUT_CONFLICT")]
     ShortcutConflict,
+    #[serde(rename = "PA_CREDENTIALS_UNAVAILABLE")]
+    CredentialsUnavailable,
+    #[serde(rename = "PA_CREDENTIAL_INVALID")]
+    CredentialInvalid,
+    #[serde(rename = "PA_CREDENTIAL_PROFILE_NOT_FOUND")]
+    CredentialProfileNotFound,
+    #[serde(rename = "PA_CREDENTIAL_REVISION_CONFLICT")]
+    CredentialRevisionConflict,
+    #[serde(rename = "PA_CREDENTIAL_BUSY")]
+    CredentialBusy,
+    #[serde(rename = "PA_CREDENTIALS_STORAGE_FAILED")]
+    CredentialsStorageFailed,
 }
 
 #[derive(Serialize)]
@@ -164,6 +177,36 @@ impl ErrorCode {
                 "快捷键已被系统或其他应用占用。",
                 "请更换快捷键组合；悬浮球仍可使用。",
             ),
+            Self::CredentialsUnavailable => (
+                ErrorCategory::Environment,
+                "系统凭据库当前不可用。",
+                "请检查 Windows 凭据服务和当前用户权限后重试；不会降级保存到文件或数据库。",
+            ),
+            Self::CredentialInvalid => (
+                ErrorCategory::Validation,
+                "凭据或服务源绑定无效。",
+                "请检查 profile、HTTPS 服务源和 Key 格式后重试。",
+            ),
+            Self::CredentialProfileNotFound => (
+                ErrorCategory::Validation,
+                "服务源 profile 不存在。",
+                "请先读取可用 profile，再提交凭据。",
+            ),
+            Self::CredentialRevisionConflict => (
+                ErrorCategory::Conflict,
+                "服务源已被其他操作修改。",
+                "请先重新读取 profile 状态，再提交凭据变更。",
+            ),
+            Self::CredentialBusy => (
+                ErrorCategory::Conflict,
+                "该服务源仍有任务占用。",
+                "等待相关任务结束后重试；凭据未修改。",
+            ),
+            Self::CredentialsStorageFailed => (
+                ErrorCategory::Storage,
+                "凭据状态保存失败，原可用状态已保留或已标记不可用。",
+                "请检查应用数据目录权限和 Windows 凭据服务后重新读取状态。",
+            ),
             Self::DesktopInitializationFailed => (
                 ErrorCategory::Internal,
                 "桌面服务暂时不可用。",
@@ -175,7 +218,13 @@ impl ErrorCode {
             code: self,
             message,
             suggestion,
-            retryable: matches!(self, Self::DesktopInitializationFailed | Self::RevisionConflict),
+            retryable: matches!(
+                self,
+                Self::DesktopInitializationFailed
+                    | Self::RevisionConflict
+                    | Self::CredentialBusy
+                    | Self::CredentialRevisionConflict
+            ),
         }
     }
 }

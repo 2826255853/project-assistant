@@ -423,16 +423,28 @@ pub fn apply_with_id(
 ) -> Result<(), crate::ipc::ErrorCode> {
     use crate::{ipc::ErrorCode, settings::Change};
     if matches!(action, OverlayAction::Expand) && !view(app).enabled {
-        crate::settings::change_resident_with_id(app, vec![Change::OverlayEnabled(true)], correlation_id.clone())?;
+        crate::settings::change_resident_with_id(
+            app,
+            vec![Change::OverlayEnabled(true)],
+            correlation_id.clone(),
+        )?;
     }
     // Persistent actions always go through the settings transaction; do not hold
     // the window lock while calling back into that service.
     match &action {
         OverlayAction::Enable => {
-            return crate::settings::change_resident_with_id(app, vec![Change::OverlayEnabled(true)], correlation_id);
+            return crate::settings::change_resident_with_id(
+                app,
+                vec![Change::OverlayEnabled(true)],
+                correlation_id,
+            );
         }
         OverlayAction::Disable => {
-            return crate::settings::change_resident_with_id(app, vec![Change::OverlayEnabled(false)], correlation_id);
+            return crate::settings::change_resident_with_id(
+                app,
+                vec![Change::OverlayEnabled(false)],
+                correlation_id,
+            );
         }
         OverlayAction::SetShortcut { shortcut } => {
             return crate::settings::change_resident_with_id(

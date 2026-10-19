@@ -208,8 +208,44 @@ fn corrupt_database_is_not_replaced() {
     let path = directory.0.join(DATABASE_NAME);
     fs::write(&path, "not a database fixture").unwrap();
     let before = fs::read(&path).unwrap();
-    assert!(Storage::open(&directory.0).is_err());
+    let failure = Storage::open(&directory.0).err().unwrap();
+    assert_eq!(failure.public_code(), "PA_STORAGE_CORRUPT");
+    let runtime = StorageState::default();
+    assert_eq!(
+        runtime
+            .initialize(&directory.0, &crate::ipc::correlation_id())
+            .unwrap_err()
+            .public_code(),
+        "PA_STORAGE_CORRUPT"
+    );
+    assert_eq!(runtime.health().reason_code, Some("PA_STORAGE_CORRUPT"));
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn query_only_migration_is_not_reported_as_busy() {
+    let (directory, storage) = fixture();
+    let mut readonly =
+        Connection::open_with_flags(&storage.path, OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+    readonly.pragma_update(None, "query_only", true).unwrap();
+    let failure = Storage::migrate(&mut readonly, &directory.0, true, MIGRATIONS).unwrap_err();
+    assert_eq!(failure.public_code(), "PA_STORAGE_SQL_FAILED");
+}
+
+#[test]
+fn migration_write_lock_conflict_is_reported_as_busy_without_changes() {
+    let (directory, mut storage) = fixture();
+    let mut contender = Connection::open(&storage.path).unwrap();
+    contender.busy_timeout(Duration::ZERO).unwrap();
+    let transaction = storage
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let failure = Storage::migrate(&mut contender, &directory.0, true, MIGRATIONS).unwrap_err();
+    assert_eq!(failure.public_code(), "PA_STORAGE_BUSY");
+    assert!(!directory.0.join("backups").exists());
+    drop(transaction);
+    probe::verify(&mut contender).unwrap();
 }
 
 #[test]
@@ -271,6 +307,42 @@ fn profile_edit_and_capability_expiry_do_not_change_snapshots() {
             .connection
             .execute("DELETE FROM provider_profiles", [])
             .is_err()
+    );
+}
+
+#[test]
+fn capabilities_require_current_profile_revision_and_observation_window() {
+    let (_directory, mut storage) = fixture();
+    for (at, expected) in [(999, 0), (1000, 1), (1999, 1), (2000, 0)] {
+        assert_eq!(
+            storage.capabilities().count_valid("provider1", at).unwrap(),
+            expected
+        );
+    }
+    storage
+        .connection
+        .execute(
+            "UPDATE provider_profiles SET config_revision = 2 WHERE id = 'provider1'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        storage
+            .capabilities()
+            .count_valid("provider1", 1001)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row(
+                "SELECT config_revision FROM ai_config_snapshots WHERE id = 'snap1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
     );
 }
 
@@ -384,6 +456,125 @@ fn real_v1_settings_upgrade_preserves_values_and_backs_up_original() {
             )
             .unwrap(),
         "google"
+    );
+}
+
+#[test]
+fn real_v2_credentials_upgrade_preserves_profiles_settings_audit_and_backup() {
+    use crate::settings::Change;
+
+    let directory = Fixture::new();
+    let mut old = Storage::open_with(&directory.0, &MIGRATIONS[..2]).unwrap();
+    old.settings().initialize_defaults(&directory.0).unwrap();
+    let previous = old
+        .settings()
+        .update_view(
+            1,
+            &[
+                Change::SearchEngine("google".into()),
+                Change::OverlayEnabled(false),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    old.connection.execute_batch(
+        "INSERT INTO provider_profiles VALUES ('legacy-key', 'synthetic', 'relay', 'self_managed', NULL,
+            'https://fixture.invalid/v1', 'https://fixture.invalid', 'responses', 'api_key',
+            'credential:legacy-key:7', 7, NULL, NULL, 1, 9, 1000, 1000);
+         INSERT INTO provider_profiles VALUES ('legacy-login', 'synthetic', 'official', 'self_managed', NULL,
+            'https://fixture.invalid/v1', 'https://fixture.invalid', 'responses', 'external_login',
+            NULL, 0, NULL, NULL, 0, 1, 1000, 1000);
+         INSERT INTO audit_events (id, occurred_at, correlation_id, event_kind, outcome, profile_id)
+            VALUES ('legacy-audit', 1001, 'synthetic', 'config_read', 'success', 'legacy-key');"
+    ).unwrap();
+    let audit_count: i64 = old
+        .connection
+        .query_row("SELECT count(*) FROM audit_events", [], |row| row.get(0))
+        .unwrap();
+    // Keep the v2 connection open so the upgrade must preserve committed WAL data.
+    let mut upgraded = Storage::open(&directory.0).unwrap();
+    assert_eq!(upgraded.settings().read_view().unwrap(), previous);
+    let configured = upgraded
+        .profiles()
+        .credential_profile("legacy-key")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        configured.credential_ref.as_deref(),
+        Some("credential:legacy-key:7")
+    );
+    assert_eq!(configured.credential_revision, 7);
+    assert_eq!(configured.config_revision, 9);
+    assert_eq!(configured.credential_status, "configured_unverified");
+    assert_eq!(
+        upgraded
+            .profiles()
+            .credential_profile("legacy-login")
+            .unwrap()
+            .unwrap()
+            .credential_status,
+        "missing"
+    );
+    assert_eq!(
+        upgraded
+            .connection
+            .query_row("SELECT count(*) FROM audit_events", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        audit_count
+    );
+    assert_eq!(
+        upgraded
+            .connection
+            .query_row(
+                "SELECT profile_id FROM audit_events WHERE id = 'legacy-audit'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "legacy-key"
+    );
+    let backup_path = fs::read_dir(directory.0.join("backups"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut backup =
+        Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(
+        backup
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert!(
+        backup
+            .prepare("SELECT credential_status FROM provider_profiles")
+            .is_err()
+    );
+    assert_eq!(
+        backup
+            .query_row("SELECT count(*) FROM audit_events", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        audit_count
+    );
+    assert_eq!(
+        SettingsRepository::new(&mut backup).read_view().unwrap(),
+        previous
+    );
+    drop(upgraded);
+    drop(old);
+    let mut reopened = Storage::open(&directory.0).unwrap();
+    assert_eq!(reopened.settings().read_view().unwrap(), previous);
+    assert_eq!(
+        reopened
+            .connection
+            .query_row("SELECT count(*) FROM schema_migrations", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        SCHEMA_VERSION
     );
 }
 
@@ -524,6 +715,7 @@ fn typed_repositories_keep_business_access_out_of_raw_ipc() {
             event_kind: "config_read",
             outcome: "success",
             error_code: None,
+            profile_id: None,
         })
         .unwrap();
     assert_eq!(
@@ -537,6 +729,146 @@ fn typed_repositories_keep_business_access_out_of_raw_ipc() {
             .unwrap(),
         1
     );
+}
+
+#[test]
+fn credential_commit_updates_reference_invalidates_cache_and_audits_atomically() {
+    let (_directory, mut storage) = fixture();
+    let correlation_id = crate::ipc::correlation_id();
+    let committed = storage
+        .profiles()
+        .commit_credential_change(
+            "provider1",
+            1,
+            2,
+            "credential:provider1:2",
+            "configured_unverified",
+            &correlation_id,
+            |profile| {
+                assert_eq!(profile.credential_revision, 1);
+                Ok(())
+            },
+            |_| panic!("successful commit must not roll back"),
+            |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(committed.credential_revision, 2);
+    assert_eq!(
+        committed.credential_ref.as_deref(),
+        Some("credential:provider1:2")
+    );
+    assert_eq!(committed.config_revision, 2);
+    assert_eq!(
+        storage
+            .capabilities()
+            .count_valid("provider1", 1001)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        storage.connection.query_row(
+            "SELECT count(*) FROM audit_events WHERE event_kind = 'credential_change' AND outcome = 'success' AND profile_id = 'provider1'",
+            [],
+            |row| row.get::<_, i64>(0),
+        ).unwrap(),
+        1
+    );
+}
+
+#[test]
+fn credential_audit_failure_rolls_back_metadata_and_invokes_compensation() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (_directory, mut storage) = fixture();
+    storage
+        .connection
+        .execute_batch(
+            "CREATE TRIGGER reject_credential_audit BEFORE INSERT ON audit_events WHEN NEW.event_kind = 'credential_change' BEGIN SELECT RAISE(ABORT, 'fixture'); END;",
+        )
+        .unwrap();
+    let rolled_back = AtomicBool::new(false);
+    let correlation_id = crate::ipc::correlation_id();
+    let result = storage.profiles().commit_credential_change(
+        "provider1",
+        1,
+        2,
+        "credential:provider1:2",
+        "configured_unverified",
+        &correlation_id,
+        |_| Ok(()),
+        |_| {
+            rolled_back.store(true, Ordering::SeqCst);
+            true
+        },
+        |_| panic!("failed audit must not commit"),
+    );
+
+    assert!(result.is_err());
+    assert!(rolled_back.load(Ordering::SeqCst));
+    let profile = storage
+        .profiles()
+        .credential_profile("provider1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(profile.credential_revision, 1);
+    assert_eq!(profile.config_revision, 1);
+    assert_eq!(profile.credential_status, "configured_unverified");
+    assert_eq!(
+        storage
+            .capabilities()
+            .count_valid("provider1", 1001)
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn credential_compensation_retains_write_lock_through_statement_and_commit_failure() {
+    for commit_failure in [false, true] {
+        let (_directory, mut storage) = fixture();
+        let competing = Connection::open(&storage.path).unwrap();
+        competing.busy_timeout(Duration::ZERO).unwrap();
+        storage.connection.execute_batch(if commit_failure {
+            "CREATE TEMP TABLE commit_guard (profile TEXT REFERENCES provider_profiles(id)); CREATE TEMP TRIGGER reject_commit AFTER UPDATE ON provider_profiles BEGIN INSERT INTO commit_guard VALUES ('absent-profile'); END; PRAGMA defer_foreign_keys = ON;"
+        } else {
+            "CREATE TEMP TRIGGER reject_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'fixture'); END;"
+        }).unwrap();
+        let compensated = std::cell::Cell::new(false);
+        let result = storage.profiles().commit_credential_change(
+            "provider1",
+            1,
+            2,
+            "credential:provider1:2",
+            "configured_unverified",
+            &crate::ipc::correlation_id(),
+            |_| Ok(()),
+            |_| {
+                let error = competing.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+                assert_eq!(
+                    error.sqlite_error_code(),
+                    Some(rusqlite::ErrorCode::DatabaseBusy)
+                );
+                compensated.set(true);
+                true
+            },
+            |_| panic!("failed transaction must not commit"),
+        );
+        assert!(result.is_err());
+        assert!(compensated.get());
+        competing
+            .execute_batch("BEGIN IMMEDIATE; ROLLBACK;")
+            .unwrap();
+        assert_eq!(
+            storage
+                .profiles()
+                .credential_profile("provider1")
+                .unwrap()
+                .unwrap()
+                .config_revision,
+            1
+        );
+    }
 }
 
 #[test]
@@ -589,7 +921,7 @@ fn audit_retention_keeps_boundary_and_all_non_audit_data() {
         ("model_capabilities", 1),
         ("ai_config_snapshots", 1),
         ("settings", 2),
-        ("schema_migrations", 2),
+        ("schema_migrations", 3),
     ] {
         assert_eq!(
             storage
@@ -772,6 +1104,7 @@ fn rejected_audit_and_settings_secret_sentinels_never_reach_database_or_backup()
                 event_kind,
                 outcome,
                 error_code,
+                profile_id: None,
             })
             .unwrap_err();
         assert_eq!(failure.public_code(), "PA_AUDIT_WRITE_FAILED");

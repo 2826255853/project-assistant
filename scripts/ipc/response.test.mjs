@@ -36,6 +36,7 @@ test("IPC permissions are limited to the local main window and explicit commands
   assert.ok(config.permissions.includes("allow-desktop-initialize"));
   assert.ok(config.permissions.includes("allow-settings-get"));
   assert.ok(config.permissions.includes("allow-settings-update"));
+  assert.deepEqual(config.permissions.filter(p => /credential/.test(p)).sort(), ["allow-credential-put", "allow-credential-remove"].sort());
   assert.ok(!config.permissions.includes("allow-framework-probe"));
   assert.ok(!config.permissions.includes("allow-phase0-check-open-path"));
   assert.ok(!config.permissions.some((p) => JSON.stringify(p).includes("opener:")));
@@ -56,7 +57,7 @@ test("IPC permissions are limited to the local main window and explicit commands
     assert.ok(capability.permissions.includes("allow-app-get-status"));
     assert.ok(capability.permissions.includes("core:event:allow-listen"));
     assert.ok(capability.permissions.includes("core:event:allow-unlisten"));
-    assert.ok(!capability.permissions.some(p => /core:default|event:default|allow-emit|allow-ipc-fixture|provider|credential|operation|task-start|approval/.test(p)));
+    assert.ok(!capability.permissions.some(p => /core:default|event:default|allow-emit|allow-ipc-fixture|provider|operation|task-start|approval/.test(p)));
     assert.equal(capability.remote, undefined);
   }
   const build = await readFile(new URL("../../src-tauri/build.rs", import.meta.url), "utf8");

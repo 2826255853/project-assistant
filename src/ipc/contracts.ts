@@ -100,6 +100,8 @@ export interface ImplementedCommandMap {
   // Main-window only; logs_clear returns the authoritative status after cleanup.
   logs_get_status: { params: Record<string, never>; data: LogStatus };
   logs_clear: { params: Record<string, never>; data: LogStatus };
+  credential_put: { params: { profileId: string; expectedRevision: number; secret: string }; data: { credential: CredentialState; configRevision: number } };
+  credential_remove: { params: { profileId: string; expectedRevision: number }; data: { credential: CredentialState; configRevision: number } };
 }
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.

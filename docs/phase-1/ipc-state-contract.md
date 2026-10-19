@@ -10,6 +10,8 @@
 | --- | --- | --- | --- |
 | desktop_initialize | 允许 | 拒绝 | `{}` / `{mode:normal或phase0}` |
 | app_get_status | 允许 | 允许 | `{}` / `AppStatus` |
+| credential_put | 允许 | 拒绝 | `{profileId,expectedRevision,secret}` / `{credential:{status,revision},configRevision}`；无读取 secret 命令 |
+| credential_remove | 允许 | 拒绝 | `{profileId,expectedRevision}` / 同上 |
 | overlay_get | 允许 | 允许 | `{}` / `OverlayView`，main 的 draft 固定为空 |
 | overlay_control | 窗口入口/开关/快捷键/退出 | 窗口入口/开关/私有草稿 | `OverlayAction` / `null` |
 | framework_probe | 仅调试 phase0 | 拒绝 | 4096 UTF-8 字节消息 / 测试回复 |
@@ -48,3 +50,11 @@ ccSwitch 固定返回 `{management:user_manual,integration:disabled,readSupporte
 expectedRevision 作用于整个全局设置批次；未知字段/键、重复键、非法值、冲突或 SQL/快捷键注册失败均拒绝整个事务。成功递增修订并发送无载荷 app_state_changed；位置实际变化也递增，故编辑表单必须保留旧修订并处理冲突。PA_CONFLICT_REVISION 要求用户先重读再提交；不自动覆盖。
 
 错误：PA_SETTINGS_INVALID_VALUE、PA_SETTINGS_CORRUPT、PA_SETTINGS_STORAGE_FAILED、PA_SETTINGS_RECOVERY_FAILED、PA_SETTINGS_AI_UNAVAILABLE、PA_CONFLICT_REVISION，以及已有 IPC/快捷键错误。状态服务 settings 已可 ready；损坏/启动失败返回 unavailable，不回显错误输入、SQL 或原始异常。
+
+## 步骤 1.6 凭据契约补充（2026-10-19）
+
+凭据命令仅本地 main 授权，Rust 再校验真实 label/URL。`expectedRevision` 是 profile 的 **config revision**；credential revision 随成功 put/remove 递增，初始为 0。Key 为非空、无 NUL、最多 1800 UTF-8 字节；超过 24 KiB 的 put 输入在解析前拒绝。返回只含凭据状态、credential revision 和 config revision，严格拒绝额外字段；不存在读取 Key 的 IPC。
+
+修订冲突先重新读取 profile（读取服务随 1.8 接入），由用户再次确认提交；凭据变更不自动重发。占用自有任务时由 blocking worker 等待空闲，状态查询仍可响应；5 分钟未空闲返回 `PA_CREDENTIAL_BUSY`。客户端超时/停止等待不取消服务端操作。成功变更及服务不可用发布既有无载荷状态失效事件，完整 Key 不进入事件或诊断。
+
+固定错误：PA_CREDENTIALS_UNAVAILABLE、PA_CREDENTIAL_INVALID、PA_CREDENTIAL_PROFILE_NOT_FOUND、PA_CREDENTIAL_REVISION_CONFLICT、PA_CREDENTIAL_BUSY、PA_CREDENTIALS_STORAGE_FAILED；审计提交失败为 PA_AUDIT_WRITE_FAILED。失败补偿及验收范围见 `step-1.6.md`；本步骤通过不开放 AI 配置页或真实任务。

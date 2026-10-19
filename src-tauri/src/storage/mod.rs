@@ -12,12 +12,12 @@ pub mod probe;
 mod repositories;
 mod settings;
 pub use repositories::{
-    AUDIT_RETENTION_MS, AuditEventInput, AuditRepository, CapabilityRepository, ProfileRepository,
-    SettingRecord, SettingsRepository, SnapshotRepository,
+    AUDIT_RETENTION_MS, AuditEventInput, AuditRepository, CapabilityRepository, CredentialProfile,
+    ProfileRepository, SettingRecord, SettingsRepository, SnapshotRepository,
 };
 
 pub const DATABASE_NAME: &str = "project-assistant.sqlite3";
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 struct Migration {
     version: i64,
@@ -35,6 +35,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "settings",
         sql: include_str!("../../migrations/0002_settings.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "credentials",
+        sql: include_str!("../../migrations/0003_credentials.sql"),
     },
 ];
 
@@ -54,6 +59,7 @@ impl StorageError {
             "STORAGE_SQL_FAILED" => "PA_STORAGE_SQL_FAILED",
             "STORAGE_CLOCK_FAILED" => "PA_STORAGE_CLOCK_FAILED",
             "STORAGE_AUDIT_WRITE_FAILED" | "STORAGE_AUDIT_INVALID_INPUT" => "PA_AUDIT_WRITE_FAILED",
+            "STORAGE_CREDENTIAL_ROLLBACK_FAILED" => "PA_CREDENTIALS_STORAGE_FAILED",
             "STORAGE_BACKUP_FAILED" => "PA_STORAGE_BACKUP_FAILED",
             "STORAGE_MIGRATION_FAILED" => "PA_STORAGE_MIGRATION_FAILED",
             "STORAGE_NEWER_SCHEMA" => "PA_STORAGE_NEWER_SCHEMA",
@@ -80,8 +86,17 @@ fn error(code: &'static str) -> StorageError {
         backup_path: None,
     }
 }
-fn sql_error(_: rusqlite::Error) -> StorageError {
-    error("STORAGE_SQL_FAILED")
+fn database_error(failure: rusqlite::Error, fallback: &'static str) -> StorageError {
+    use rusqlite::ErrorCode;
+    let code = match failure.sqlite_error_code() {
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => "STORAGE_BUSY",
+        Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase) => "STORAGE_CORRUPT",
+        _ => fallback,
+    };
+    error(code)
+}
+fn sql_error(failure: rusqlite::Error) -> StorageError {
+    database_error(failure, "STORAGE_SQL_FAILED")
 }
 fn checksum(sql: &str) -> String {
     format!("{:x}", Sha256::digest(sql.replace("\r\n", "\n").as_bytes()))
@@ -105,10 +120,7 @@ impl Storage {
         correlation_id: &str,
     ) -> Result<RecoverySummary, StorageError> {
         repositories::validate_correlation_id(correlation_id)?;
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| error("STORAGE_BUSY"))?;
+        let transaction = self.connection.transaction().map_err(sql_error)?;
         let finished_at = repositories::audit_now_ms()?;
         let tasks = transaction
             .execute(
@@ -131,6 +143,7 @@ impl Storage {
                     event_kind: "storage_recovery",
                     outcome: "interrupted",
                     error_code: Some("PA_STORAGE_RESTART_INTERRUPTED"),
+                    profile_id: None,
                 },
                 finished_at,
             )?;
@@ -174,8 +187,8 @@ impl Storage {
             } else {
                 OpenFlags::SQLITE_OPEN_CREATE
             };
-        let mut connection =
-            Connection::open_with_flags(&path, flags).map_err(|_| error("STORAGE_OPEN_FAILED"))?;
+        let mut connection = Connection::open_with_flags(&path, flags)
+            .map_err(|failure| database_error(failure, "STORAGE_OPEN_FAILED"))?;
         connection
             .busy_timeout(Duration::from_secs(5))
             .map_err(sql_error)?;
@@ -211,16 +224,16 @@ impl Storage {
         // Serializes version check, backup and every pending migration against writers.
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|_| error("STORAGE_BUSY"))?;
+            .map_err(sql_error)?;
         let version: i64 = transaction
             .pragma_query_value(None, "user_version", |row| row.get(0))
-            .map_err(|_| error("STORAGE_CORRUPT"))?;
+            .map_err(sql_error)?;
         if version > migrations.len() as i64 {
             return Err(error("STORAGE_NEWER_SCHEMA"));
         }
         let integrity: String = transaction
             .query_row("PRAGMA quick_check", [], |row| row.get(0))
-            .map_err(|_| error("STORAGE_CORRUPT"))?;
+            .map_err(sql_error)?;
         if integrity != "ok" {
             return Err(error("STORAGE_CORRUPT"));
         }
@@ -238,7 +251,7 @@ impl Storage {
         } else {
             let mut statement = transaction
                 .prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version")
-                .map_err(|_| error("STORAGE_MIGRATION_HISTORY"))?;
+                .map_err(|failure| database_error(failure, "STORAGE_MIGRATION_HISTORY"))?;
             let history = statement
                 .query_map([], |r| {
                     Ok((

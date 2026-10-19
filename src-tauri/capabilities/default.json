@@ -13,6 +13,8 @@
     "allow-settings-update",
     "allow-logs-get-status",
     "allow-logs-clear",
+    "allow-credential-put",
+    "allow-credential-remove",
     "allow-desktop-initialize",
     "allow-overlay-get",
     "allow-overlay-control",

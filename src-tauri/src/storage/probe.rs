@@ -9,9 +9,12 @@ pub fn seed(connection: &mut Connection) -> Result<(), StorageError> {
     transaction.execute_batch(r#"
         INSERT INTO projects VALUES ('p1', 'C:\\阶段 0 项目 & 空格', 'fixture:p1', '阶段 0 项目', NULL, 1000, 1000);
         INSERT INTO project_usage VALUES ('p1', 1000, 1, 'codex');
-        INSERT INTO provider_profiles VALUES ('provider1', '合成服务', 'relay', 'self_managed', NULL,
+        INSERT INTO provider_profiles (id, name, source_kind, adapter_kind, external_profile_id,
+          endpoint, endpoint_origin, wire_api, auth_kind, credential_ref, credential_revision,
+          default_model, default_effort, enabled, config_revision, created_at, updated_at, credential_status)
+          VALUES ('provider1', '合成服务', 'relay', 'self_managed', NULL,
           'https://fixture.invalid/v1', 'https://fixture.invalid', 'responses', 'api_key',
-          'credential:provider1:1', 1, 'fixture-model', 'fixture-effort', 1, 1, 1000, 1000);
+          'credential:provider1:1', 1, 'fixture-model', 'fixture-effort', 1, 1, 1000, 1000, 'configured_unverified');
         INSERT INTO model_capabilities VALUES ('provider1', 'fixture-model', 'fixture-effort', 4096, 1,
           'connection_probe', 'fixture-v1', 1, 1000, 2000);
         INSERT INTO sessions VALUES ('s1', 'p1', 'fixture-thread', NULL, 'active', 1000, 1000);

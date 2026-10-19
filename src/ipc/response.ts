@@ -16,7 +16,7 @@ export function parseResponse<T>(value: unknown, accepts: (data: unknown) => dat
       typeof e.category === "string" && ["validation", "permission", "environment", "authentication", "compatibility", "conflict", "timeout", "cancelled", "external", "storage", "internal"].includes(e.category) &&
       typeof e.message === "string" && e.message.length <= 512 && typeof e.suggestion === "string" && e.suggestion.length <= 512 && typeof e.retryable === "boolean") return value as unknown as Response<T>;
   }
-  throw errorForCode("PA_IPC_RESPONSE_INVALID", value.correlationId);
+  throw errorForCode("PA_IPC_RESPONSE_INVALID");
 }
 export function isProbeReply(value: unknown): value is ProbeReply {
   return isRecord(value) && typeof value.message === "string" && typeof value.platform === "string" && typeof value.architecture === "string";

@@ -182,7 +182,11 @@ pub fn status(app: &tauri::AppHandle, private_draft: bool) -> AppStatus {
     let mut result = data.snapshot(overlay::view(app), private_draft, storage_state(app));
     if !app.state::<crate::desktop::DesktopState>().phase0 {
         let logs = app.state::<crate::logging::LoggingState>().status();
-        let logging = result.services.iter_mut().find(|s| s.id == "logging").unwrap();
+        let logging = result
+            .services
+            .iter_mut()
+            .find(|s| s.id == "logging")
+            .unwrap();
         logging.state = if logs.enabled { "ready" } else { "degraded" };
         logging.reason_code = logs.error_code;
         let failure = *app
@@ -205,6 +209,33 @@ pub fn status(app: &tauri::AppHandle, private_draft: bool) -> AppStatus {
             ipc::ErrorCode::SettingsRecoveryFailed => "PA_SETTINGS_RECOVERY_FAILED",
             _ => "PA_SETTINGS_STORAGE_FAILED",
         });
+        let credentials = result
+            .services
+            .iter_mut()
+            .find(|s| s.id == "credentials")
+            .unwrap();
+        #[cfg(windows)]
+        {
+            credentials.state = if storage_state(app).state == "ready"
+                && app.state::<crate::credentials::CredentialsState>().health()
+            {
+                "ready"
+            } else {
+                "unavailable"
+            };
+            credentials.reason_code = if credentials.state == "ready" {
+                None
+            } else if !app.state::<crate::credentials::CredentialsState>().health() {
+                Some("PA_CREDENTIALS_UNAVAILABLE")
+            } else {
+                storage_state(app).reason_code
+            };
+        }
+        #[cfg(not(windows))]
+        {
+            credentials.state = "unavailable";
+            credentials.reason_code = Some("PA_CREDENTIALS_UNAVAILABLE");
+        }
     }
     if app.state::<crate::desktop::DesktopState>().phase0 {
         let service = result

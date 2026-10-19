@@ -1,6 +1,6 @@
 # 本机项目助手 · 桌面基础
 
-步骤 1.1（S1-01）已实现桌面主框架：默认进入工作台，提供项目、设置、AI 配置和服务状态导航，以及启动错误恢复与退出入口。常驻入口的启停、快捷键、位置和显示器标识已支持本机持久化；业务服务仍按后续步骤开放，项目列表、业务设置、profile/Key、生产进程隔离尚未启用。详细规划以 [计划文档 v1.5](计划文档.txt)、[步骤 1.1 实施记录](docs/phase-1/step-1.1.md) 和 [替代方案 ADR-0011](docs/phase-0/self-managed-profile-adr.md) 为准。
+步骤 1.1–1.5 已分别实现桌面主框架、正式 IPC/状态、数据库恢复、全局设置以及错误呈现/日志/审计/清理。步骤 1.6 系统凭据库及安全引用已于 2026-10-19 通过本机合成凭据验收，并于 2026-10-20 在固定工具链基线完成收尾复验，含独立进程读回、跨存储故障补偿和 dev/built 真实桌面；不开放真实 Key、profile 或任务入口。项目列表、业务设置、生产进程隔离尚未启用；步骤 1.1/1.4 的真实托盘、物理显示器和实时 DPI 仍待 1.10 人工复核。详细规划以 [计划文档 v1.5](计划文档.txt)、[步骤 1.6 实施记录](docs/phase-1/step-1.6.md) 和 [替代方案 ADR-0011](docs/phase-0/self-managed-profile-adr.md) 为准。
 
 步骤 1.2（S1-02）已接通正式 IPC、服务状态查询和版本化事件；主窗口与悬浮入口共享服务状态，事件缺口和窗口重建可重新查询恢复。详情见 [验收记录](docs/phase-1/step-1.2.md) 与 [正式契约及命令授权矩阵](docs/phase-1/ipc-state-contract.md)。复现入口为 `npm run verify:state`，报告位于 `artifacts/phase-1-2/report.json`。
 
@@ -51,6 +51,8 @@ $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 `npm run dev` 仅启动浏览器前端，普通浏览器中没有 Tauri IPC，会显示固定本地服务不可用提示。请使用 `npm run tauri dev` 查看真实主窗口。
 
 ## 可重复验证
+
+步骤 1.6 凭据收尾入口为 `npm run verify:credentials`，报告位于 `artifacts/phase-1-6/report.json`。该入口只使用临时合成凭据，覆盖独立进程与 dev/built 桌面，并清理确切自有记录；系统服务/权限失败采用适配层注入。2026-10-20 已在固定基线 Node/npm 24.18.0/11.16.0、Rust 1.99.0 下通过该入口和 `verify:storage`，补齐此前的版本差异复验，详情见 [步骤 1.6](docs/phase-1/step-1.6.md)。
 
 步骤 1.4 已提供可用设置页：全局设置与常驻开关/快捷键/位置统一保存到 SQLite；修订冲突须重新读取后提交，非法值/写入或快捷键注册失败保持旧值。原常驻 JSON 仅一次性迁移，不再写入。AI 默认值与真实凭据仍不开放。
 
@@ -160,6 +162,8 @@ $cli = if ($env:CODEX_BIN) { $env:CODEX_BIN } else {
 
 ## 步骤 0.5：数据与迁移验证
 
+2026-10-19 数据库复验修复了 schema v3 的验收版本误报、SQLite 错误分类和能力缓存修订/时间校验；步骤 1.6 收尾已补齐凭据验证并修正 IPC 旧权限断言。最新 31 项存储测试、19 项 IPC 及独立进程读回通过，具体结果和工具链差异见 [数据库修复记录](docs/phase-1/storage-fixes-2026-10-19.md) 与 [步骤 1.6](docs/phase-1/step-1.6.md)。以下阶段 0 说明保留历史范围，当前实现以最新记录为准。
+
 ```powershell
 npm run verify:storage
 ```
@@ -207,6 +211,6 @@ npm run test:ipc
 - [安全边界与威胁测试清单](docs/phase-0/security-checklist.md)
 - [步骤 0.6 验收](docs/phase-0/ipc-security-verification.md)
 
-步骤 1.3（S1-03）已接入正常启动数据库、schema v1 迁移、类型化仓储和启动恢复；数据库失败保持原库并返回固定 storage 原因码。详情见 [验收记录](docs/phase-1/step-1.3.md)。步骤 1.4 已追加 schema v2、设置 IPC 与常驻恢复；日志/完整审计、凭据库和真实 provider/Codex 服务仍按后续步骤推进。
+步骤 1.3（S1-03）已接入正常启动数据库、类型化仓储和启动恢复；数据库失败保持原库并返回固定 storage 原因码。步骤 1.4 追加 schema v2，步骤 1.5 已接入日志与审计；步骤 1.6 追加 schema v3 并通过 Windows Credential Manager、专用 IPC 和跨存储补偿验收。各步骤范围及未验收项分别见对应 `docs/phase-1/step-1.*.md`。
 
-步骤 0.3、0.7 及阶段 0 按替代范围通过，允许启动阶段一；生产自管凭据、隔离与恢复仍待实现和验收，见 [阶段门评审](docs/phase-0/phase-gate-review.md)。
+步骤 0.3、0.7 及阶段 0 按替代范围通过；系统凭据持久化已按步骤 1.6 当前范围通过，生产进程/路由隔离及完整恢复仍待后续实现和验收。阶段 0 历史决策见 [阶段门评审](docs/phase-0/phase-gate-review.md)，最新实现以阶段 1 记录为准。

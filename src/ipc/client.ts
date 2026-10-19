@@ -8,6 +8,7 @@ import { awaitTransport } from "./transport";
 import { isAppStatus, isOverlayView } from "./state";
 import { isSettingsView } from "./settings";
 import { isLogStatus } from "./logging";
+import { isCredentialMutation } from "./credentials";
 import { errorForCode } from "./errors";
 
 type Name = keyof ImplementedCommandMap;
@@ -17,9 +18,10 @@ const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMa
   overlay_control: (data): data is null => data === null,
   settings_get: isSettingsView, settings_update: isSettingsView,
   logs_get_status: isLogStatus, logs_clear: isLogStatus,
+  credential_put: isCredentialMutation, credential_remove: isCredentialMutation,
 };
 export async function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]> {
-  if ((command === "logs_get_status" || command === "logs_clear") && !isMainWindow()) throw errorForCode("PA_IPC_PERMISSION_DENIED");
+  if ((command === "logs_get_status" || command === "logs_clear" || command === "credential_put" || command === "credential_remove") && !isMainWindow()) throw errorForCode("PA_IPC_PERMISSION_DENIED");
   const wire = await awaitTransport(() => invoke<unknown>(command, { request: { apiVersion: API_VERSION, params } }), options);
   return unwrap(parseResponse(wire, validators[command]));
 }

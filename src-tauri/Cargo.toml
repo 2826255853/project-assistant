@@ -24,6 +24,10 @@ tauri-plugin-opener = "2"
 rusqlite = { version = "0.32.1", features = ["backup", "bundled"] }
 sha2 = "0.10"
 tauri-plugin-global-shortcut = "2"
+url = "2.5.8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Security_Credentials"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

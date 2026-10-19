@@ -1,7 +1,8 @@
 // One coordinated pass for step 1.5; historical acceptance suites are not rerun.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 assert.ok(process.env.npm_execpath, "Run via npm run verify:logging");
@@ -24,6 +25,7 @@ async function run(label, args, executable = process.execPath) {
   report.checks.push(label);
 }
 try {
+  process.env.PA_LOG_VERIFY_DIR = await mkdtemp(resolve(tmpdir(), "pa-logging-verify-"));
   await run("frontend-build", ["run", "build"]);
   await run("rust-format", ["fmt", "--check", "--manifest-path", "src-tauri/Cargo.toml"], "cargo");
   await run("rust-tests", ["test", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--lib"], "cargo");
@@ -39,5 +41,6 @@ try {
   process.exitCode = 1;
   console.error(report.error);
 } finally {
+  if (process.env.PA_LOG_VERIFY_DIR) await rm(process.env.PA_LOG_VERIFY_DIR, {recursive: true, force: true});
   await writeFile(resolve(output, "report.json"), JSON.stringify(report, null, 2) + "\n");
 }

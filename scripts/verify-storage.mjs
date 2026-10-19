@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -40,6 +40,13 @@ let ownsFixture = false;
 try {
   const npmCli = process.env.npm_execpath;
   assert.ok(npmCli, "Run via npm run verify:storage");
+  const versions = (await readdir(join(root, "src-tauri", "migrations")))
+    .filter((name) => /^\d{4}_.+\.sql$/.test(name))
+    .map((name) => Number(name.slice(0, 4)))
+    .sort((a, b) => a - b);
+  assert.ok(versions.length > 0, "Expected versioned SQL migrations");
+  assert.deepEqual(versions, versions.map((_, index) => index + 1), "Expected consecutive migration versions");
+  report.expectedSchemaVersion = versions.length;
   await checkCommand("frontend-build", process.execPath, [npmCli, "run", "build"]);
   const tests = await checkCommand("rust-storage-tests", "cargo", ["test", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--lib", "storage::"]);
   const summary = tests.stdout.match(/test result: ok\. (\d+) passed/);
@@ -50,10 +57,11 @@ try {
   const seed = await checkCommand("app-data-seed-process", exe, ["--phase0-storage-probe", "seed", id], 30000);
   report.seed = JSON.parse(seed.stdout.trim());
   assert.equal(report.seed.passed, true);
+  assert.equal(report.seed.schemaVersion, report.expectedSchemaVersion);
   const verify = await checkCommand("app-data-restart-process", exe, ["--phase0-storage-probe", "verify", id], 30000);
   report.restart = JSON.parse(verify.stdout.trim());
   assert.equal(report.restart.passed, true);
-  assert.equal(report.restart.schemaVersion, 2);
+  assert.equal(report.restart.schemaVersion, report.expectedSchemaVersion);
   assert.equal(report.restart.journalMode, "wal");
   assert.equal(report.restart.usesTauriAppDataDir, true);
   report.processRestartVerified = true;

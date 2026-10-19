@@ -1,4 +1,5 @@
 mod app_state;
+mod credentials;
 mod desktop;
 pub mod ipc;
 mod logging;
@@ -7,6 +8,67 @@ pub mod safety;
 mod settings;
 pub mod storage;
 use tauri::Manager;
+
+#[tauri::command]
+async fn credential_put(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<credentials::MutationResult> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        let secret_size = request
+            .get("params")
+            .and_then(|params| params.get("secret"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::len)
+            .unwrap_or(0);
+        if secret_size > 24 * 1024 {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<credentials::PutRequest>(request)
+    })();
+    let result = match parsed {
+        Ok(request) => {
+            let worker_app = app.clone();
+            let worker_id = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                credentials::put(&worker_app, request, &worker_id)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::CredentialsStorageFailed))
+        }
+        Err(error) => Err(error),
+    };
+    complete(&app, "credential_put", id, result)
+}
+
+#[tauri::command]
+async fn credential_remove(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<credentials::MutationResult> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        ipc::parse_request::<credentials::RemoveRequest>(request)
+    })();
+    let result = match parsed {
+        Ok(request) => {
+            let worker_app = app.clone();
+            let worker_id = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                credentials::remove(&worker_app, request, &worker_id)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::CredentialsStorageFailed))
+        }
+        Err(error) => Err(error),
+    };
+    complete(&app, "credential_remove", id, result)
+}
 
 #[tauri::command]
 async fn logs_get_status(
@@ -119,7 +181,8 @@ fn complete<T: serde::Serialize>(
 ) -> ipc::Response<T> {
     let failure = result.as_ref().err().copied();
     eprintln!("{}", ipc::command_log(command, &id, failure));
-    app.state::<logging::LoggingState>().record(command, &id, failure);
+    app.state::<logging::LoggingState>()
+        .record(command, &id, failure);
     ipc::Response::from_result(id, result)
 }
 
@@ -159,6 +222,9 @@ async fn ipc_fixture(
         }
         let params: Params = ipc::parse_request(request)?;
         match params.action.as_str() {
+            action if action.starts_with("credential_") => {
+                credentials::verification_fixture(&app, action)
+            }
             "tray_disable" => overlay::tray_action(&app, "disable"),
             "tray_enable" => overlay::tray_action(&app, "enable"),
             "audit_fail_write" | "audit_restore_write" => {
@@ -232,6 +298,7 @@ fn desktop_initialize(
 
 #[tauri::command]
 fn framework_probe(
+    app: tauri::AppHandle,
     request: serde_json::Value,
     state: tauri::State<'_, desktop::DesktopState>,
 ) -> ipc::Response<ipc::ProbeReply> {
@@ -242,6 +309,11 @@ fn framework_probe(
         Err(ipc::ErrorCode::InvalidRequest)
     };
     eprintln!("{}", ipc::probe_log(&id, result.as_ref().err().copied()));
+    app.state::<logging::LoggingState>().record(
+        "framework_probe",
+        &id,
+        result.as_ref().err().copied(),
+    );
     ipc::Response::from_result(id, result)
 }
 
@@ -284,6 +356,7 @@ pub fn run() {
         .manage(storage::StorageState::default())
         .manage(settings::SettingsState::default())
         .manage(logging::LoggingState::default())
+        .manage(credentials::CredentialsState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -315,6 +388,25 @@ pub fn run() {
                             eprintln!("PA_STORAGE_STARTUP_FAILED:{}", failure.public_code());
                         }
                         settings::initialize(app.handle(), &data_dir);
+                        let level = settings::get(app.handle())
+                            .ok()
+                            .and_then(|view| view.values.into_iter().find_map(|change| match change {
+                                settings::Change::LogLevel(value) => Some(value),
+                                _ => None,
+                            }))
+                            .unwrap_or_else(|| "info".to_string());
+                        let log_dir = if cfg!(debug_assertions) {
+                            std::env::var_os("PA_LOG_VERIFY_DIR")
+                                .map(std::path::PathBuf::from)
+                                .map(Ok)
+                                .unwrap_or_else(|| app.path().app_log_dir())
+                        } else {
+                            app.path().app_log_dir()
+                        };
+                        match log_dir {
+                            Ok(path) => app.state::<logging::LoggingState>().initialize(&path, &level),
+                            Err(_) => app.state::<logging::LoggingState>().initialize(std::path::Path::new(""), &level),
+                        }
                     }
                     Err(_) => {
                         storage.mark_unavailable("PA_STORAGE_DIRECTORY_FAILED");
@@ -368,6 +460,8 @@ pub fn run() {
             settings_update,
             logs_get_status,
             logs_clear,
+            credential_put,
+            credential_remove,
             overlay_get,
             overlay_control,
             #[cfg(debug_assertions)]

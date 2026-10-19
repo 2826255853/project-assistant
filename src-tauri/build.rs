@@ -7,6 +7,8 @@ fn main() {
             "settings_update",
             "logs_get_status",
             "logs_clear",
+            "credential_put",
+            "credential_remove",
             "overlay_get",
             "overlay_control",
             "framework_probe",

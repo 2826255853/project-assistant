@@ -7,10 +7,10 @@
 本机项目助手（Project Assistant）是 Windows 桌面开发工作台，规划包含项目发现/打开、Codex 对话与审批、差异查看、Git 和搜索，以及全局常驻悬浮对话入口。
 
 - 阶段 0 已按应用自管 profile 的替代范围通过。
-- 阶段 1.1 主框架与常驻入口：有条件通过；1.2 IPC/事件：已完成；1.3 数据库与启动恢复：通过；1.4 设置与常驻恢复：有条件通过。最近实施记录日期为 2026-10-13。
+- 阶段 1.1 主框架与常驻入口：有条件通过；1.2 IPC/事件：已完成；1.3 数据库与启动恢复：通过；1.4 设置与常驻恢复：有条件通过；1.5 错误呈现、日志、审计与清理：通过（2026-10-18）。
 - 1.1/1.4 的实际托盘鼠标操作、物理显示器拔插和实时 DPI 变化仍需人工复核，复审点为 1.10；注入测试不能替代硬件验收。
-- 下一计划步骤为 **1.5（S1-04）：错误呈现、日志、审计与清理**。之后依次为凭据库、进程/路由隔离、profile/能力/快照、AI 配置页、阶段回归。
-- 项目管理、AI 配置和真实任务入口尚未开放；系统凭据库、正式 Rust Codex 进程服务与生产路由隔离尚未实现。不能宣布 M1 或阶段 1 整体完成。
+- 步骤 1.6（S1-05）系统凭据库已通过本机合成凭据验收（2026-10-19），2026-10-20 已在固定基线 Node/npm 24.18.0/11.16.0、Rust 1.99.0 下完成收尾复验：7 个独立进程读写/替换/删除/清理、真实 OS 与 SQLite 提交故障补偿、dev/built 桌面及存储回归。服务/权限失败为适配层注入。后续步骤为进程/路由隔离、profile/能力/快照、AI 配置页、阶段回归。
+- 项目管理、AI 配置和真实任务入口尚未开放；正式 Rust Codex 进程服务与生产路由隔离尚未实现。不能宣布 M1 或阶段 1 整体完成。
 
 优先阅读 `README.md`、`计划文档.txt` 第 21 节、`docs/phase-1/step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
 
@@ -43,8 +43,8 @@
 - 事件频道 `project-assistant://event/v1`，以 streamId/sequence 跟踪无载荷状态失效通知；先监听后查询，缺口/重建后查询权威快照。超时/停止等待不代表服务端取消，变更请求不得自动重发。
 - 设置 `expectedRevision` 是整个全局批次的修订号。非法值、冲突、SQL 或快捷键失败拒绝整批并保持/恢复旧状态；冲突必须重读后由用户重新提交。当前项目范围不授权，AI 默认值只接受 null，审批策略只接受 ask。
 - 常驻入口首次默认启用，快捷键 Ctrl+Alt+Space；主窗口 X 在常驻启用时隐藏，停用时退出；明确“退出应用”始终退出。停用状态重启保持停用，启用后重启显示收起悬浮球。
-- 数据库位于 Tauri `app_data_dir` 下的 `project-assistant.sqlite3`，当前 schema v2。**已有迁移 SQL 与校验和不可改写，只追加新版本**。升级先做 SQLite 一致性备份；损坏/高版本/迁移失败保留原库，不删除重建、不自动降级、不重放任务/审批。
-- 产品持久日志与完整审计尚待 1.5。其规范见 `docs/phase-0/errors-and-logging.md`：JSONL 白名单、单行 4 KiB、单文件 5 MiB、最多 5 文件/7 天/25 MiB；审计默认 90 天，配置变更与审计同事务，高风险审计失败拒绝执行。清理需核验应用目录身份并拒绝联接/符号链接越界。
+- 数据库位于 Tauri `app_data_dir` 下的 `project-assistant.sqlite3`，当前 schema v3（步骤 1.6 追加凭据状态和审计事件）。**已有迁移 SQL 与校验和不可改写，只追加新版本**。升级先做 SQLite 一致性备份；损坏/高版本/迁移失败保留原库，不删除重建、不自动降级、不重放任务/审批。
+- 产品持久日志与设置审计已在 1.5 接入。其规范见 `docs/phase-0/errors-and-logging.md`：JSONL 白名单、单行 4 KiB、单文件 5 MiB、最多 5 文件/7 天/25 MiB；审计默认 90 天，配置变更与审计同事务，高风险审计失败拒绝执行。清理核验应用目录身份并拒绝联接/符号链接越界；审批决定/消费的完整原子性仍待阶段 3。
 - 开发与验收只声明实际验证范围。历史报告、合成测试、当前实现与人工待验应分别说明；不要把阶段 0 实验通过写成生产能力通过。
 
 ## 环境与验证入口
@@ -65,6 +65,7 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 npm run verify:settings
 npm run verify:state
 npm run verify:storage
+npm run verify:credentials
 ```
 
 `npm run dev` 只运行浏览器前端，没有真实 Tauri IPC；开发端口固定 1420。完整桌面验证支持 dev/built 两种资源模式，会启动真实窗口；执行前按 README 释放相关端口/窗口。`test:codex` 为离线测试；`verify:codex` 会调用真实服务并产生模型用量，不是普通离线回归。
@@ -75,6 +76,8 @@ npm run verify:storage
 
 ## 深入阅读索引
 
+- 2026-10-20 凭据收尾复核：`docs/phase-1/step-1.6.md`。固定 Node/npm/Rust 基线下 `verify:credentials` 通过：64 项 Rust、19 项 IPC、15 项离线 Codex、release check 与 dev/built 桌面；1 个 ignored worker 由父测试显式启动。`verify:storage` 的 31 项存储测试、schema v3 独立进程重开与清理通过；已补齐 2026-10-19 的 Node/npm 版本差异复验。持久化子门通过，R-016 的路由/认证文件/未来导出仍待后续验收。
+- 2026-10-19 数据库修复与复验：`docs/phase-1/storage-fixes-2026-10-19.md`。存储验收按连续迁移清单核对版本；SQLite 损坏/锁冲突按实际原因映射，能力缓存仅认可当前 profile revision 及有效观测区间。早期 30 项存储/54 项 Rust 和 IPC 单项失败为当时结果；最新结论见凭据收尾及存储追加复验。
 - 当前实施/验收：`docs/phase-1/step-1.1.md` 至 `step-1.4.md`；IPC：`docs/phase-1/ipc-state-contract.md`（含 1.4 补充）。
 - 存储：`docs/phase-0/data-model.md`、`storage-migration-adr.md`；以追加迁移和最新实施记录解释早期状态说明。
 - 安全与后续日志工作：`docs/phase-0/security-checklist.md`、`errors-and-logging.md`、`risks.md`。
