@@ -4,6 +4,15 @@ type ErrorDefinition = readonly [category: ErrorCategory, message: string, sugge
 // Only this version-controlled catalog supplies public error text. Wire text and
 // native/plugin exceptions must never become UI content, including unknown codes.
 const catalog = {
+  PA_PROVIDER_SHARED_ROUTE_UNSAFE: ["conflict", "无法核验服务源路由隔离，操作已拒绝。", "请使用独立 HTTPS 服务源，移除项目覆盖和共享可变代理后重新测试。"],
+  PA_PROVIDER_ENDPOINT_INVALID: ["validation", "服务地址不满足安全要求。", "请填写有效的非官方 HTTPS Responses 地址，不包含认证信息、查询或片段。"],
+  PA_PROVIDER_TEST_FAILED: ["external", "候选连接测试失败，原配置保留。", "请检查站点、凭据和模型组合后重新测试。", true],
+  PA_CODEX_NOT_INSTALLED: ["environment", "Codex 可执行文件不可用。", "请选择已安装且受控的 Codex 可执行文件。"],
+  PA_CODEX_VERSION_UNSUPPORTED: ["compatibility", "Codex 协议或生效配置不兼容。", "请使用经本应用验证的客户端版本后重新测试。"],
+  PA_CODEX_REQUEST_TIMEOUT: ["timeout", "候选进程请求超时。", "候选资源将清理；请检查站点后重新测试。", true],
+  PA_CODEX_DISCONNECTED: ["external", "自有 Codex 进程已断开。", "请检查客户端与站点后重新测试。", true],
+  PA_PROCESS_CANCELLED: ["cancelled", "候选测试已取消。", "候选资源将清理，原配置保留。"],
+  PA_PROCESS_EXIT_FAILED: ["internal", "自有进程或临时资源清理失败。", "新候选将保持不可用；请退出应用后检查自有资源目录。"],
   PA_INTERNAL_UNEXPECTED: ["internal", "本地操作发生异常。", "请重启应用；持续失败时提供错误码和关联 ID 排查。"],
   PA_INTERNAL_STARTUP_FAILED: ["internal", "应用启动失败。", "请重启应用，并提供错误码和关联 ID 排查。"],
   PA_DESKTOP_INITIALIZATION_FAILED: ["internal", "桌面服务暂时不可用。", "请重试初始化；持续失败时关闭并重新启动应用。", true],

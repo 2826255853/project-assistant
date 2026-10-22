@@ -25,10 +25,31 @@ pub enum ErrorCategory {
     Compatibility,
     Internal,
     Storage,
+    Timeout,
+    Cancelled,
+    External,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub enum ErrorCode {
+    #[serde(rename = "PA_PROVIDER_SHARED_ROUTE_UNSAFE")]
+    ProviderSharedRouteUnsafe,
+    #[serde(rename = "PA_PROVIDER_ENDPOINT_INVALID")]
+    ProviderEndpointInvalid,
+    #[serde(rename = "PA_PROVIDER_TEST_FAILED")]
+    ProviderTestFailed,
+    #[serde(rename = "PA_CODEX_NOT_INSTALLED")]
+    CodexNotInstalled,
+    #[serde(rename = "PA_CODEX_VERSION_UNSUPPORTED")]
+    CodexVersionUnsupported,
+    #[serde(rename = "PA_CODEX_REQUEST_TIMEOUT")]
+    CodexRequestTimeout,
+    #[serde(rename = "PA_CODEX_DISCONNECTED")]
+    CodexDisconnected,
+    #[serde(rename = "PA_PROCESS_CANCELLED")]
+    ProcessCancelled,
+    #[serde(rename = "PA_PROCESS_EXIT_FAILED")]
+    ProcessExitFailed,
     #[serde(rename = "PA_INTERNAL_UNEXPECTED")]
     InternalUnexpected,
     #[serde(rename = "PA_LOG_CLEANUP_FAILED")]
@@ -92,6 +113,51 @@ pub struct AppError {
 impl ErrorCode {
     pub fn public(self) -> AppError {
         let (category, message, suggestion) = match self {
+            Self::ProviderSharedRouteUnsafe => (
+                ErrorCategory::Conflict,
+                "无法核验服务源路由隔离，操作已拒绝。",
+                "请使用独立 HTTPS 服务源，移除项目覆盖和共享可变代理后重新测试。",
+            ),
+            Self::ProviderEndpointInvalid => (
+                ErrorCategory::Validation,
+                "服务地址不满足安全要求。",
+                "请填写有效的非官方 HTTPS Responses 地址，不包含认证信息、查询或片段。",
+            ),
+            Self::ProviderTestFailed => (
+                ErrorCategory::External,
+                "候选连接测试失败，原配置保留。",
+                "请检查站点、凭据和模型组合后重新测试。",
+            ),
+            Self::CodexNotInstalled => (
+                ErrorCategory::Environment,
+                "Codex 可执行文件不可用。",
+                "请选择已安装且受控的 Codex 可执行文件。",
+            ),
+            Self::CodexVersionUnsupported => (
+                ErrorCategory::Compatibility,
+                "Codex 协议或生效配置不兼容。",
+                "请使用经本应用验证的客户端版本后重新测试。",
+            ),
+            Self::CodexRequestTimeout => (
+                ErrorCategory::Timeout,
+                "候选进程请求超时。",
+                "候选资源将清理；请检查站点后重新测试。",
+            ),
+            Self::CodexDisconnected => (
+                ErrorCategory::External,
+                "自有 Codex 进程已断开。",
+                "请检查客户端与站点后重新测试。",
+            ),
+            Self::ProcessCancelled => (
+                ErrorCategory::Cancelled,
+                "候选测试已取消。",
+                "候选资源将清理，原配置保留。",
+            ),
+            Self::ProcessExitFailed => (
+                ErrorCategory::Internal,
+                "自有进程或临时资源清理失败。",
+                "新候选将保持不可用；请退出应用后检查自有资源目录。",
+            ),
             Self::InternalUnexpected => (
                 ErrorCategory::Internal,
                 "本地日志已停止写入。",
@@ -224,6 +290,9 @@ impl ErrorCode {
                     | Self::RevisionConflict
                     | Self::CredentialBusy
                     | Self::CredentialRevisionConflict
+                    | Self::CodexRequestTimeout
+                    | Self::CodexDisconnected
+                    | Self::ProviderTestFailed
             ),
         }
     }

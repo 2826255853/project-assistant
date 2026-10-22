@@ -92,6 +92,20 @@ pub struct CredentialProfile {
     pub auth_kind: String,
 }
 
+/// Connection metadata for the owned adapter; never includes secret bytes.
+pub(crate) struct ProcessProfile {
+    pub endpoint: String,
+    pub endpoint_origin: String,
+    pub config_revision: i64,
+    pub credential_revision: i64,
+    pub enabled: bool,
+    pub adapter_kind: String,
+    pub external_profile_id: Option<String>,
+    pub source_kind: String,
+    pub wire_api: String,
+    pub auth_kind: String,
+}
+
 impl<'a> ProfileRepository<'a> {
     pub(super) fn new(connection: &'a mut Connection) -> Self {
         Self { connection }
@@ -105,6 +119,20 @@ impl<'a> ProfileRepository<'a> {
                 |row| row.get(0),
             )
             .map_err(sql_error)
+    }
+
+    pub(crate) fn process_profile(
+        &mut self,
+        profile_id: &str,
+    ) -> Result<Option<ProcessProfile>, StorageError> {
+        self.connection.query_row(
+            "SELECT endpoint, endpoint_origin, config_revision, credential_revision, enabled, adapter_kind, external_profile_id, source_kind, wire_api, auth_kind FROM provider_profiles WHERE id = ?1",
+            [profile_id], |row| Ok(ProcessProfile {
+                endpoint: row.get(0)?, endpoint_origin: row.get(1)?, config_revision: row.get(2)?,
+                credential_revision: row.get(3)?, enabled: row.get(4)?, adapter_kind: row.get(5)?,
+                external_profile_id: row.get(6)?, source_kind: row.get(7)?, wire_api: row.get(8)?, auth_kind: row.get(9)?,
+            }),
+        ).optional().map_err(sql_error)
     }
 
     pub fn credential_profile(

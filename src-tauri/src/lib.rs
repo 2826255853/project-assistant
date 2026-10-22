@@ -4,6 +4,7 @@ mod desktop;
 pub mod ipc;
 mod logging;
 mod overlay;
+mod owned_process;
 pub mod safety;
 mod settings;
 pub mod storage;
@@ -357,6 +358,7 @@ pub fn run() {
         .manage(settings::SettingsState::default())
         .manage(logging::LoggingState::default())
         .manage(credentials::CredentialsState::default())
+        .manage(owned_process::OwnedProcessState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -386,6 +388,8 @@ pub fn run() {
                     Ok(data_dir) => {
                         if let Err(failure) = storage.initialize(&data_dir, &ipc::correlation_id()) {
                             eprintln!("PA_STORAGE_STARTUP_FAILED:{}", failure.public_code());
+                        } else if let Err(code) = app.state::<owned_process::OwnedProcessState>().initialize(&data_dir) {
+                            eprintln!("{}", serde_json::to_string(&code).unwrap_or_default());
                         }
                         settings::initialize(app.handle(), &data_dir);
                         let level = settings::get(app.handle())

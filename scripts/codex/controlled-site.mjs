@@ -1,13 +1,14 @@
 // A synthetic Responses endpoint, never a real provider or official authentication test.
 import { createServer } from "node:http";
+import { createServer as createTlsServer } from "node:https";
 import { randomUUID } from "node:crypto";
 
-export async function controlledSite(label, key) {
+export async function controlledSite(label, key, {tls} = {}) {
   const requests = [];
   const held = [];
   let mode = "ok";
   let redirect;
-  const server = createServer(async (request, response) => {
+  const handler = async (request, response) => {
     let bytes = 0;
     const chunks = [];
     for await (const chunk of request) {
@@ -22,8 +23,8 @@ export async function controlledSite(label, key) {
       credentialPresent: Boolean(request.headers.authorization), model: payload.model,
       effort: payload.reasoning?.effort });
     if (mode === "redirect") { response.writeHead(307, { location: redirect }).end(); return; }
-    if (!keyMatches || mode === "unauthorized") {
-      response.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "Synthetic authentication failure", type: "invalid_request_error" } }));
+    if (!keyMatches || mode === "unauthorized" || mode === "echo-secret-error") {
+      response.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: mode === "echo-secret-error" ? key : "Synthetic authentication failure", type: "invalid_request_error" } }));
       return;
     }
     if (!request.url?.endsWith("/responses")) { response.writeHead(404).end(); return; }
@@ -31,7 +32,7 @@ export async function controlledSite(label, key) {
     response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     const responseId = `resp_${randomUUID()}`;
     const itemId = `msg_${randomUUID()}`;
-    const text = `CONTROLLED_${label}_OK`;
+    const text = mode === "echo-secret-success" ? key : `CONTROLLED_${label}_OK`;
     const item = { id: itemId, type: "message", role: "assistant", status: "in_progress", content: [] };
     const base = { id: responseId, object: "response", created_at: Math.floor(Date.now() / 1000), model: payload.model, status: "in_progress", output: [] };
     let sequence = 0;
@@ -53,9 +54,10 @@ export async function controlledSite(label, key) {
       response.end();
     };
     if (mode === "hold") held.push(finish); else finish();
-  });
+  };
+  const server = tls ? createTlsServer(tls, handler) : createServer(handler);
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
-  const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+  const baseUrl = `${tls ? "https" : "http"}://127.0.0.1:${server.address().port}/v1`;
   return { baseUrl, requests, setMode: (value, target) => { mode = value; redirect = target; },
     release: () => { held.splice(0).forEach((finish) => finish()); },
     close: async () => { server.closeAllConnections(); await new Promise((done) => server.close(done)); } };

@@ -9,10 +9,10 @@
 - 阶段 0 已按应用自管 profile 的替代范围通过。
 - 阶段 1.1 主框架与常驻入口：有条件通过；1.2 IPC/事件：已完成；1.3 数据库与启动恢复：通过；1.4 设置与常驻恢复：有条件通过；1.5 错误呈现、日志、审计与清理：通过（2026-10-18）。
 - 1.1/1.4 的实际托盘鼠标操作、物理显示器拔插和实时 DPI 变化仍需人工复核，复审点为 1.10；注入测试不能替代硬件验收。
-- 步骤 1.6（S1-05）系统凭据库已通过本机合成凭据验收（2026-10-19），2026-10-20 已在固定基线 Node/npm 24.18.0/11.16.0、Rust 1.99.0 下完成收尾复验：7 个独立进程读写/替换/删除/清理、真实 OS 与 SQLite 提交故障补偿、dev/built 桌面及存储回归。服务/权限失败为适配层注入。后续步骤为进程/路由隔离、profile/能力/快照、AI 配置页、阶段回归。
-- 项目管理、AI 配置和真实任务入口尚未开放；正式 Rust Codex 进程服务与生产路由隔离尚未实现。不能宣布 M1 或阶段 1 整体完成。
+- 步骤 1.6（S1-05）系统凭据库已通过本机合成凭据验收（2026-10-19），2026-10-20 已在固定基线 Node/npm 24.18.0/11.16.0、Rust 1.99.0 下完成收尾复验：7 个独立进程读写/替换/删除/清理、真实 OS 与 SQLite 提交故障补偿、dev/built 桌面及存储回归。服务/权限失败为适配层注入。1.7 已随后完成，后续步骤为 profile/能力/快照、AI 配置页、阶段回归。
+- 步骤 1.7（S1-06）已实现正式 Rust 自有 stdio 候选适配器和配置层实际路由隔离，见 `docs/phase-1/step-1.7.md`；每候选独立固定上游转发层仅在 Rust 内存中使用站点 Key，子进程只持临时入口凭据。正常启动只初始化/清理自有资源，不启动 Codex。项目管理、AI 配置和真实任务入口尚未开放；1.8 profile/能力/切换恢复与阶段 3 网关仍待实现。不能宣布 M1 或阶段 1 整体完成。
 
-优先阅读 `README.md`、`计划文档.txt` 第 21 节、`docs/phase-1/step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
+优先阅读 `README.md`、`计划文档.txt` 第 21 节、`docs/phase-1/step-1.7.md` 和 `step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
 
 ## 已确认的产品约定
 
@@ -32,6 +32,7 @@
 - `src-tauri/src/lib.rs`：命令封装、启动顺序、状态注入、窗口生命周期和命令注册；`desktop.rs`：初始化模式；`app_state.rs`：权威状态与事件游标。
 - `src-tauri/src/settings.rs`：设置 DTO、校验、运行状态应用/回滚和统一更新；`overlay.rs`：托盘、快捷键、位置、显示器校正与窗口操作。
 - `src-tauri/src/storage/mod.rs`：连接保护、迁移/备份、启动恢复及 StorageState；`repositories.rs`：类型化仓储；`storage/settings.rs`：设置事务、修订与旧 JSON 一次迁移。
+- `src-tauri/src/owned_process/`：1.7 正式自有候选进程、配置/来源核验、固定上游转发、当前用户 DACL、Windows Job 与自有 home 清理；Rust 内部 `probe_candidate` 留给 1.8 使用，未新增业务 IPC。`verify:isolation` 为实际 CLI/合成 HTTPS 验收；生产不允许用环境变量开启 loopback/自签 CA。
 - `src-tauri/src/ipc.rs`：严格请求、窗口授权、固定错误和白名单命令日志；`safety.rs` 是阶段 0 路径/审批参考，不是完整生产安全服务。
 - `src-tauri/build.rs`、`capabilities/*.json`：命令清单与窗口最小授权；新增命令须同步 Rust 注册、DTO/返回校验、权限和契约。
 - `scripts/verify-*.mjs`：验收入口；`scripts/ipc/`：前端协议/状态/设置及桌面场景；`scripts/codex/`：阶段 0 Node 客户端和合成站点实验，不等于正式 Codex 服务。
@@ -66,6 +67,7 @@ npm run verify:settings
 npm run verify:state
 npm run verify:storage
 npm run verify:credentials
+npm run verify:isolation
 ```
 
 `npm run dev` 只运行浏览器前端，没有真实 Tauri IPC；开发端口固定 1420。完整桌面验证支持 dev/built 两种资源模式，会启动真实窗口；执行前按 README 释放相关端口/窗口。`test:codex` 为离线测试；`verify:codex` 会调用真实服务并产生模型用量，不是普通离线回归。
@@ -75,6 +77,8 @@ npm run verify:credentials
 2026-10-18 环境与仓库检查：PATH 已可找到 node/npm/cargo/rustc/git，实测 Git 为 2.55.0.windows.5；`node_modules/`、`dist/` 和 `artifacts/` 已存在，其存在不代表验收通过。本次按用户要求，以当前本地文件重新初始化 Git 仓库，默认分支为 `main`；这是新仓库，不含原有提交历史，未配置远程仓库。现有忽略规则覆盖依赖、构建产物、验收报告及 Tauri 自动生成文件。Git 提交姓名和邮箱已在本仓库内配置为 `2826255853` / `2826255853@qq.com`，以当前本地源码建立首次基线提交；不修改全局 Git 身份。本次仅处理仓库建立，未执行应用构建或测试，也未重新核验 Node/npm/Rust 版本和桌面依赖。
 
 ## 深入阅读索引
+
+- 2026-10-21 进程与配置层实际路由隔离通过：`docs/phase-1/step-1.7.md`。`verify:isolation` 为完整入口，覆盖 75 项 Rust、19 项 IPC、15 项离线、14 个实际 CLI/双合成 HTTPS 场景及 dev/built 主框架/凭据共 4 桌面场景，清理通过；3 个 ignored worker 均有父入口。真实任务并发/运行中切换、1.8 完整恢复仍待对应功能门；R-014/R-016 未整体关闭。CLI 实测 0.163.0-alpha.10.2 不接受旧 untrusted 配置，当前使用 on-request 且审批一律不批准。
 
 - 2026-10-20 凭据收尾复核：`docs/phase-1/step-1.6.md`。固定 Node/npm/Rust 基线下 `verify:credentials` 通过：64 项 Rust、19 项 IPC、15 项离线 Codex、release check 与 dev/built 桌面；1 个 ignored worker 由父测试显式启动。`verify:storage` 的 31 项存储测试、schema v3 独立进程重开与清理通过；已补齐 2026-10-19 的 Node/npm 版本差异复验。持久化子门通过，R-016 的路由/认证文件/未来导出仍待后续验收。
 - 2026-10-19 数据库修复与复验：`docs/phase-1/storage-fixes-2026-10-19.md`。存储验收按连续迁移清单核对版本；SQLite 损坏/锁冲突按实际原因映射，能力缓存仅认可当前 profile revision 及有效观测区间。早期 30 项存储/54 项 Rust 和 IPC 单项失败为当时结果；最新结论见凭据收尾及存储追加复验。

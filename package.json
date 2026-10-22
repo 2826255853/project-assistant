@@ -14,6 +14,7 @@
     "verify:settings": "node scripts/verify-settings.mjs",
     "verify:logging": "node scripts/verify-logging.mjs",
     "verify:credentials": "node scripts/verify-credentials.mjs",
+    "verify:isolation": "node scripts/verify-isolation.mjs",
     "verify:git": "node scripts/verify-git.mjs",
     "verify:system-open": "node scripts/verify-system-open.mjs",
     "verify:storage": "node scripts/verify-storage.mjs",

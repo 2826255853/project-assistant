@@ -197,9 +197,9 @@ try {
     await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.draft)"), (value) => value === draft);
     assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.draft)"), "");
     await overlayEval("document.querySelector('#overlay-draft').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }))");
-    assert.equal(await overlayEval("Boolean(document.querySelector('.overlay-error'))"), false);
+    assert.equal(await overlayEval("Boolean(document.querySelector('.error-notice'))"), false);
     await overlayEval("document.querySelector('#overlay-draft').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))");
-    await until(() => overlayEval("document.querySelector('.overlay-error')?.textContent"), (value) => value?.includes("尚未启用"));
+    await until(() => overlayEval("document.querySelector('.error-notice')?.textContent"), (value) => value?.includes("PA_TASKS_NOT_IMPLEMENTED"));
     assert.equal(await overlayEval("document.querySelector('footer button:last-child').disabled"), true);
     const panelShot = await cdp("Page.captureScreenshot", { format: "png" }, overlaySocket);
     await writeFile(resolve(output, "overlay-panel.png"), Buffer.from(panelShot.data, "base64"));

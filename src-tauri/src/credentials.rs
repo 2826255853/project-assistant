@@ -21,7 +21,7 @@ static OS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) struct SecretBuffer(Vec<u8>);
 impl SecretBuffer {
-    fn new(bytes: Vec<u8>) -> Self {
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -215,6 +215,17 @@ pub(crate) fn resolve(
         .operation
         .lock()
         .map_err(|_| ErrorCode::CredentialsStorageFailed)?;
+    resolve_for_owned_locked(app, profile_id, credential_revision, expected_origin)
+}
+
+/// Caller holds CredentialsState.operation for the entire owned candidate.
+pub(crate) fn resolve_for_owned_locked(
+    app: &tauri::AppHandle,
+    profile_id: &str,
+    credential_revision: i64,
+    expected_origin: &str,
+) -> Result<SecretBuffer, ErrorCode> {
+    let state = app.state::<CredentialsState>();
     let result = app
         .state::<storage::StorageState>()
         .with_storage(|storage| {
@@ -318,6 +329,75 @@ fn next_binding(current: &Binding, status: &str) -> Result<Binding, ErrorCode> {
 
 fn logical_ref(profile_id: &str, revision: i64) -> String {
     format!("credential:{profile_id}:{revision}")
+}
+
+/// Acceptance-only bridge: exercise the production SQLite/OS-store resolver
+/// using a unique synthetic HTTPS binding, then remove its exact vault target.
+/// Only cfg(test) permits the loopback HTTPS origin and temporary test CA.
+#[cfg(all(test, windows))]
+pub(crate) fn isolation_fixture_secret(
+    profile_id: &str,
+    endpoint: &str,
+    secret: &str,
+) -> SecretBuffer {
+    let _lock = OS_TEST_LOCK.lock().unwrap();
+    assert!(profile_id.starts_with("isolation-") && valid_profile_id(profile_id));
+    let mut url = Url::parse(endpoint).unwrap();
+    url.set_scheme("https").unwrap();
+    let origin = url.origin().ascii_serialization();
+    let directory = std::env::temp_dir().join(format!("pa-isolation-credential-{profile_id}"));
+    let mut database = storage::Storage::open(&directory).unwrap();
+    database.connection.execute(
+        "INSERT INTO provider_profiles (id,name,source_kind,adapter_kind,endpoint,endpoint_origin,wire_api,auth_kind,credential_ref,credential_revision,enabled,config_revision,created_at,updated_at,credential_status) VALUES (?1,'Synthetic isolation','relay','self_managed',?2,?3,'responses','api_key',?4,0,1,1,1000,1000,'missing')",
+        rusqlite::params![profile_id, url.as_str(), origin, logical_ref(profile_id, 0)],
+    ).unwrap();
+    struct Cleanup(Binding, std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = platform::delete(&self.0);
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
+    }
+    let current = read_binding(&mut database, profile_id).unwrap();
+    let next = next_binding(&current, "configured_unverified").unwrap();
+    let cleanup = Cleanup(next.clone(), directory.clone());
+    mutate_in_storage(
+        &mut database,
+        profile_id,
+        1,
+        Some(secret),
+        &crate::ipc::correlation_id(),
+        &SystemStore,
+    )
+    .unwrap();
+    assert!(
+        resolve_in_storage(
+            &mut database,
+            profile_id,
+            next.credential_revision,
+            "https://wrong.invalid",
+            &SystemStore
+        )
+        .is_err()
+    );
+    let value = resolve_in_storage(
+        &mut database,
+        profile_id,
+        next.credential_revision,
+        &origin,
+        &SystemStore,
+    )
+    .unwrap();
+    assert!(
+        value.as_bytes() == secret.as_bytes(),
+        "synthetic resolution mismatch"
+    );
+    platform::delete(&next).unwrap();
+    assert!(platform::read(&next).unwrap().is_none());
+    drop(database);
+    std::fs::remove_dir_all(directory).unwrap();
+    drop(cleanup);
+    value
 }
 
 trait CredentialStore {
