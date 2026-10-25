@@ -579,6 +579,50 @@ fn real_v2_credentials_upgrade_preserves_profiles_settings_audit_and_backup() {
 }
 
 #[test]
+fn real_v3_provider_upgrade_preserves_defaults_and_old_schema_backup() {
+    let directory = Fixture::new();
+    let mut old = Storage::open_with(&directory.0, &MIGRATIONS[..3]).unwrap();
+    probe::seed(&mut old.connection).unwrap();
+    let before: i64 = old
+        .connection
+        .query_row("SELECT count(*) FROM ai_config_snapshots", [], |r| r.get(0))
+        .unwrap();
+    let upgraded = Storage::open(&directory.0).unwrap();
+    assert_eq!(
+        upgraded
+            .connection
+            .query_row("SELECT count(*) FROM ai_config_snapshots", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        before
+    );
+    let missing:i64=upgraded.connection.query_row("SELECT count(*) FROM settings s LEFT JOIN ai_default_revisions r ON r.setting_id=s.id WHERE s.key='ai_defaults' AND r.setting_id IS NULL",[],|r|r.get(0)).unwrap();
+    assert_eq!(missing, 0);
+    assert_eq!(
+        upgraded
+            .connection
+            .query_row("SELECT blocked FROM ai_runtime", [], |r| r
+                .get::<_, bool>(0))
+            .unwrap(),
+        false
+    );
+    let backup = fs::read_dir(directory.0.join("backups"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let backup = Connection::open_with_flags(backup, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(
+        backup
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    assert!(backup.prepare("SELECT * FROM provider_operations").is_err());
+}
+
+#[test]
 fn failed_sql_errors_never_expose_query_values() {
     let (directory, storage) = fixture();
     let result = Storage::open_with(
@@ -921,7 +965,7 @@ fn audit_retention_keeps_boundary_and_all_non_audit_data() {
         ("model_capabilities", 1),
         ("ai_config_snapshots", 1),
         ("settings", 2),
-        ("schema_migrations", 3),
+        ("schema_migrations", SCHEMA_VERSION),
     ] {
         assert_eq!(
             storage

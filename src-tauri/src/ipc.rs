@@ -30,8 +30,24 @@ pub enum ErrorCategory {
     External,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ErrorCode {
+    #[serde(rename = "PA_PROVIDER_SELECTION_INVALID")]
+    ProviderSelectionInvalid,
+    #[serde(rename = "PA_PROVIDER_ADAPTER_UNAVAILABLE")]
+    ProviderAdapterUnavailable,
+    #[serde(rename = "PA_PROVIDER_DISABLED")]
+    ProviderDisabled,
+    #[serde(rename = "PA_PROVIDER_REFERENCED")]
+    ProviderReferenced,
+    #[serde(rename = "PA_PROVIDER_CAPABILITY_INVALID")]
+    ProviderCapabilityInvalid,
+    #[serde(rename = "PA_PROVIDER_QUEUE_FULL")]
+    ProviderQueueFull,
+    #[serde(rename = "PA_OPERATION_NOT_FOUND")]
+    OperationNotFound,
+    #[serde(rename = "PA_PROVIDER_ROLLBACK_FAILED")]
+    ProviderRollbackFailed,
     #[serde(rename = "PA_PROVIDER_SHARED_ROUTE_UNSAFE")]
     ProviderSharedRouteUnsafe,
     #[serde(rename = "PA_PROVIDER_ENDPOINT_INVALID")]
@@ -98,9 +114,31 @@ pub enum ErrorCode {
     CredentialBusy,
     #[serde(rename = "PA_CREDENTIALS_STORAGE_FAILED")]
     CredentialsStorageFailed,
+    #[serde(rename = "PA_PROJECT_NOT_FOUND")]
+    ProjectNotFound,
+    #[serde(rename = "PA_PROJECT_PICKER_FAILED")]
+    ProjectPickerFailed,
+    #[serde(rename = "PA_PROJECT_PATH_UNSAFE")]
+    ProjectPathUnsafe,
+    #[serde(rename = "PA_PROJECT_PATH_UNAVAILABLE")]
+    ProjectPathUnavailable,
+    #[serde(rename = "PA_PROJECT_PATH_CHANGED")]
+    ProjectPathChanged,
+    #[serde(rename = "PA_PROJECT_FILE_OUTSIDE_PROJECT")]
+    ProjectFileOutsideProject,
+    #[serde(rename = "PA_PROJECT_FILE_MISSING")]
+    ProjectFileMissing,
+    #[serde(rename = "PA_PROJECT_ACCESS_DENIED")]
+    ProjectAccessDenied,
+    #[serde(rename = "PA_PROJECT_OPEN_REJECTED")]
+    ProjectOpenRejected,
+    #[serde(rename = "PA_PROJECT_OPEN_TIMEOUT")]
+    ProjectOpenTimeout,
+    #[serde(rename = "PA_PROJECT_CONFLICT_REVISION")]
+    ProjectConflictRevision,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppError {
     pub category: ErrorCategory,
@@ -113,6 +151,46 @@ pub struct AppError {
 impl ErrorCode {
     pub fn public(self) -> AppError {
         let (category, message, suggestion) = match self {
+            Self::ProviderSelectionInvalid => (
+                ErrorCategory::Validation,
+                "服务源或模型选择无效。",
+                "请重新读取服务源、修订和模型能力，不会自动换站。",
+            ),
+            Self::ProviderAdapterUnavailable => (
+                ErrorCategory::Compatibility,
+                "此历史或官方服务源不可激活。",
+                "请在应用内手动重建非官方自管 HTTPS profile；不会导入外部配置。",
+            ),
+            Self::ProviderDisabled => (
+                ErrorCategory::Conflict,
+                "服务源已停用。",
+                "请在主窗口启用后重新读取并测试。",
+            ),
+            Self::ProviderReferenced => (
+                ErrorCategory::Conflict,
+                "此服务源仍有历史或默认选择引用。",
+                "请停用服务源，或先清除默认选择与凭据；历史快照不会改写。",
+            ),
+            Self::ProviderCapabilityInvalid => (
+                ErrorCategory::Compatibility,
+                "模型能力未验证或已过期。",
+                "请刷新隔离模型目录并重新选择支持的强度。",
+            ),
+            Self::ProviderQueueFull => (
+                ErrorCategory::Conflict,
+                "配置操作队列已满。",
+                "最多允许八项未完成操作；请等待或取消后重试。",
+            ),
+            Self::OperationNotFound => (
+                ErrorCategory::Validation,
+                "本应用操作不存在。",
+                "请使用本应用返回的操作 ID 查询，不会自动重放变更。",
+            ),
+            Self::ProviderRollbackFailed => (
+                ErrorCategory::Internal,
+                "AI 配置恢复未通过核验，新任务已阻止。",
+                "请检查服务源后主动测试并重新切换，或清除默认配置；不会静默恢复任务。",
+            ),
             Self::ProviderSharedRouteUnsafe => (
                 ErrorCategory::Conflict,
                 "无法核验服务源路由隔离，操作已拒绝。",
@@ -273,6 +351,61 @@ impl ErrorCode {
                 "凭据状态保存失败，原可用状态已保留或已标记不可用。",
                 "请检查应用数据目录权限和 Windows 凭据服务后重新读取状态。",
             ),
+            Self::ProjectNotFound => (
+                ErrorCategory::Validation,
+                "项目记录不存在或当前不可用于此操作。",
+                "请重新读取项目列表后重试。",
+            ),
+            Self::ProjectPickerFailed => (
+                ErrorCategory::Environment,
+                "本地项目选择器不可用。",
+                "请检查桌面权限后重试；取消选择不会保存项目。",
+            ),
+            Self::ProjectPathUnsafe => (
+                ErrorCategory::Permission,
+                "项目路径不在允许的本机范围内。",
+                "请从应用目录选择器重新选择本机项目目录。",
+            ),
+            Self::ProjectPathUnavailable => (
+                ErrorCategory::Environment,
+                "已登记的项目目录当前不可访问。",
+                "请检查目录是否存在及权限；不会自动绑定其他目录。",
+            ),
+            Self::ProjectPathChanged => (
+                ErrorCategory::Conflict,
+                "项目目录身份已变化，需要重新授权。",
+                "请重新选择原项目目录并确认授权。",
+            ),
+            Self::ProjectFileOutsideProject => (
+                ErrorCategory::Permission,
+                "文件目标超出项目授权目录。",
+                "请选择项目目录内的文件。",
+            ),
+            Self::ProjectFileMissing => (
+                ErrorCategory::Validation,
+                "项目文件不存在。",
+                "请重新读取项目后选择现有文件。",
+            ),
+            Self::ProjectAccessDenied => (
+                ErrorCategory::Permission,
+                "操作系统拒绝访问项目目标。",
+                "请检查当前用户对项目目录的访问权限。",
+            ),
+            Self::ProjectOpenRejected => (
+                ErrorCategory::External,
+                "系统未接受项目打开请求。",
+                "请检查系统默认程序或编辑器设置后主动重试。",
+            ),
+            Self::ProjectOpenTimeout => (
+                ErrorCategory::Timeout,
+                "等待系统接受项目打开请求超时。",
+                "请查询项目状态后由用户决定是否再次打开。",
+            ),
+            Self::ProjectConflictRevision => (
+                ErrorCategory::Conflict,
+                "项目记录已被其他操作修改。",
+                "请重新读取项目后再提交，不会自动覆盖。",
+            ),
             Self::DesktopInitializationFailed => (
                 ErrorCategory::Internal,
                 "桌面服务暂时不可用。",
@@ -293,6 +426,9 @@ impl ErrorCode {
                     | Self::CodexRequestTimeout
                     | Self::CodexDisconnected
                     | Self::ProviderTestFailed
+                    | Self::ProjectPathUnavailable
+                    | Self::ProjectOpenTimeout
+                    | Self::ProjectConflictRevision
             ),
         }
     }

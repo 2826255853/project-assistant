@@ -57,10 +57,36 @@ test("IPC permissions are limited to the local main window and explicit commands
     assert.ok(capability.permissions.includes("allow-app-get-status"));
     assert.ok(capability.permissions.includes("core:event:allow-listen"));
     assert.ok(capability.permissions.includes("core:event:allow-unlisten"));
-    assert.ok(!capability.permissions.some(p => /core:default|event:default|allow-emit|allow-ipc-fixture|provider|operation|task-start|approval/.test(p)));
+    assert.ok(!capability.permissions.some(p => /core:default|event:default|allow-emit|allow-ipc-fixture|task-start|approval/.test(p)));
+    if (capability===overlay) assert.ok(!capability.permissions.some(p=>/provider|operation/.test(p)));
     assert.equal(capability.remote, undefined);
   }
   const build = await readFile(new URL("../../src-tauri/build.rs", import.meta.url), "utf8");
   assert.ok(build.includes("AppManifest::new().commands"));
   assert.ok(!config.permissions.some((p) => typeof p === "string" && /shell|fs:|allow-all/.test(p)));
+});
+
+test("phase 2 project contracts are not exposed as callable IPC or window permissions", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const read = path => readFile(new URL(path, import.meta.url), "utf8");
+  const [contracts, rustCommands, manifest, mainCapability, overlayCapability, appState] = await Promise.all([
+    read("../../src/ipc/contracts.ts"),
+    read("../../src-tauri/src/lib.rs"),
+    read("../../src-tauri/build.rs"),
+    read("../../src-tauri/capabilities/default.json").then(JSON.parse),
+    read("../../src-tauri/capabilities/overlay.json").then(JSON.parse),
+    read("../../src-tauri/src/app_state.rs"),
+  ]);
+  const implemented = contracts.match(/export interface ImplementedCommandMap \{([\s\S]*?)^\}/m)?.[1];
+  assert.ok(implemented, "implemented command map is present");
+  const planned = ["projects_add_from_picker", "projects_list", "project_get", "project_select", "project_remove",
+    "project_open_directory", "project_pick_file", "project_open_file", "project_git_summary"];
+  for (const command of planned) {
+    assert.equal(implemented.includes(command), false, `${command} is not implemented`);
+    assert.equal(rustCommands.includes(command), false, `${command} is not registered in Rust`);
+    assert.equal(manifest.includes(command), false, `${command} is not in the Tauri command manifest`);
+  }
+  assert.equal(mainCapability.permissions.some(permission => /project/i.test(permission)), false);
+  assert.equal(overlayCapability.permissions.some(permission => /project/i.test(permission)), false);
+  assert.match(appState, /PA_PROJECTS_NOT_IMPLEMENTED/);
 });

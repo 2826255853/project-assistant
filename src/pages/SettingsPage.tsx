@@ -93,6 +93,6 @@ export function SettingsPage() {
     </form>}
     {status?.overlay.shortcutError && <ErrorNotice error={errorForCode(status.overlay.shortcutError)} testId="shortcut-error" />}
     <LoggingPanel allowClear streamId={status?.streamId} sequence={status?.sequence} />
-    <p>AI 默认值未配置；服务源和凭据管理在配置服务就绪后开放。</p>
+    <p>AI 默认选择请在 AI 配置页中测试并应用；设置页不会直接修改服务源或凭据。</p>
   </div>;
 }

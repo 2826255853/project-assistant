@@ -1,5 +1,6 @@
 import type { SettingsView } from "./contracts.ts";
 import { isRecord } from "./response.ts";
+import { isSelection } from "./providers.ts";
 
 export function isSettingsView(value: unknown): value is SettingsView {
   if (!isRecord(value) || Object.keys(value).length !== 2 || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || !Array.isArray(value.values) || value.values.length !== 10) return false;
@@ -15,7 +16,7 @@ export function isSettingsView(value: unknown): value is SettingsView {
       case "log_level": if (!["error", "warn", "info", "debug"].includes(String(v))) return false; break;
       case "summary_retention_days": if (!Number.isInteger(v) || Number(v) < 1 || Number(v) > 365) return false; break;
       case "editor": if (v !== null && (!isRecord(v) || Object.keys(v).length !== 2 || v.id !== "custom" || typeof v.executable !== "string" || v.executable.length > 1024)) return false; break;
-      case "ai_defaults": if (v !== null) return false; break;
+      case "ai_defaults": if (v !== null && !isSelection(v)) return false; break;
       case "overlay_enabled": if (typeof v !== "boolean") return false; break;
       case "overlay_shortcut": if (typeof v !== "string" || v.length < 1 || v.length > 80) return false; break;
       case "overlay_position":

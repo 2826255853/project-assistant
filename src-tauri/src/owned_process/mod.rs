@@ -71,7 +71,7 @@ impl Cancel {
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
-    fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
     fn check(&self) -> Result<()> {
@@ -109,6 +109,9 @@ pub(crate) struct Executable {
     _pin: File,
 }
 impl Executable {
+    pub(crate) fn identity(&self) -> &str {
+        &self.hash
+    }
     pub fn inspect(path: &Path) -> std::result::Result<Self, ErrorCode> {
         let path = home::check_path(path).map_err(|_| ErrorCode::CodexNotInstalled)?;
         if !path.is_file() || path.extension().and_then(|v| v.to_str()) != Some("exe") {
@@ -138,6 +141,173 @@ impl Executable {
         }
         Ok(())
     }
+}
+
+pub(crate) struct CatalogEntry {
+    pub model_id: String,
+    pub efforts: Vec<String>,
+    pub default_effort: Option<String>,
+}
+
+/// Configuration-only discovery: private home, fixed route and no turn/start.
+/// Catalog declarations are not remote authentication/model-acceptance evidence.
+pub(crate) fn catalog_candidate(
+    app: &tauri::AppHandle,
+    executable: &Executable,
+    profile_id: &str,
+    revision: i64,
+) -> std::result::Result<Vec<CatalogEntry>, ErrorCode> {
+    let state = app.state::<OwnedProcessState>();
+    let _serial = state
+        .serial
+        .lock()
+        .map_err(|_| ErrorCode::ProcessExitFailed)?;
+    if state.blocked.load(Ordering::Acquire) {
+        return Err(ErrorCode::ProcessExitFailed);
+    }
+    let credentials = app.state::<credentials::CredentialsState>();
+    let _credential = credentials
+        .operation
+        .lock()
+        .map_err(|_| ErrorCode::CredentialsStorageFailed)?;
+    let p = app
+        .state::<crate::storage::StorageState>()
+        .with_storage(|db| db.profiles().process_profile(profile_id))
+        .map_err(|_| ErrorCode::SettingsStorageFailed)?
+        .ok_or(ErrorCode::CredentialProfileNotFound)?;
+    if p.config_revision != revision {
+        return Err(ErrorCode::RevisionConflict);
+    }
+    if !p.enabled
+        || p.adapter_kind != "self_managed"
+        || p.external_profile_id.is_some()
+        || p.source_kind != "relay"
+        || p.wire_api != "responses"
+        || p.auth_kind != "api_key"
+    {
+        return Err(ErrorCode::ProviderSharedRouteUnsafe);
+    }
+    let selection = Selection {
+        profile_id: profile_id.into(),
+        config_revision: revision,
+        credential_revision: p.credential_revision.max(1),
+        endpoint: p.endpoint,
+        origin: p.endpoint_origin,
+        model: "catalog-discovery".into(),
+        effort: "medium".into(),
+        fixture: false,
+        #[cfg(test)]
+        fixture_ca: None,
+    };
+    let root = state
+        .root
+        .lock()
+        .map_err(|_| ErrorCode::ProcessExitFailed)?
+        .clone()
+        .ok_or(ErrorCode::ProviderSharedRouteUnsafe)?;
+    // The catalog never needs site authentication. An unexpected CLI request
+    // cannot leak a real credential; no external credential is inherited.
+    let secret = SecretBuffer::new(random_token().map_err(Failure::code)?.into_bytes());
+    let mut candidate = Candidate::start(
+        &root,
+        executable,
+        selection,
+        secret,
+        None,
+        Cancel::default(),
+        Duration::from_secs(45),
+    )
+    .map_err(Failure::code)?;
+    let result = read_catalog(&mut candidate);
+    let exit = candidate.close().map_err(|e| {
+        state.blocked.store(true, Ordering::Release);
+        e.code()
+    })?;
+    if exit.forced || exit.code != Some(0) {
+        return Err(ErrorCode::ProcessExitFailed);
+    }
+    result.map_err(Failure::code)
+}
+
+fn read_catalog(candidate: &mut Candidate) -> Result<Vec<CatalogEntry>> {
+    candidate.rpc("initialize",json!({"clientInfo":{"name":"project_assistant_catalog","version":"0.1.0"},"capabilities":{"experimentalApi":false}}))?;
+    candidate.send(json!({"method":"initialized","params":{}}))?;
+    let config = candidate.rpc(
+        "config/read",
+        json!({"includeLayers":true,"cwd":candidate.cwd}),
+    )?;
+    candidate.verify_effective_config(&config)?;
+    let mut entries = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let page = candidate.rpc("model/list", json!({"cursor":cursor,"limit":100}))?;
+        for v in page
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or(Failure::Protocol)?
+        {
+            let m = v
+                .get("model")
+                .and_then(Value::as_str)
+                .ok_or(Failure::Protocol)?;
+            let mut efforts = v
+                .get("supportedReasoningEfforts")
+                .and_then(Value::as_array)
+                .ok_or(Failure::Protocol)?
+                .iter()
+                .map(|e| {
+                    e.get("reasoningEffort")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or(Failure::Protocol)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let mut default = v
+                .get("defaultReasoningEffort")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if !crate::providers::valid_model(m)
+                || entries.len() >= 512
+                || efforts.is_empty()
+                || efforts.len() > 16
+            {
+                return Err(Failure::Protocol);
+            }
+            efforts.retain(|e| {
+                matches!(
+                    e.as_str(),
+                    "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+                )
+            });
+            efforts.sort();
+            efforts.dedup();
+            if efforts.is_empty() {
+                continue;
+            }
+            if default.as_ref().is_some_and(|d| !efforts.contains(d)) {
+                default = None;
+            }
+            entries.push(CatalogEntry {
+                model_id: m.into(),
+                efforts,
+                default_effort: default,
+            });
+        }
+        cursor = match page.get("nextCursor") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(v)) if v.len() <= 1024 => Some(v.clone()),
+            _ => return Err(Failure::Protocol),
+        };
+        let Some(next) = &cursor else { break };
+        if !seen.insert(next.clone()) || seen.len() > 32 {
+            return Err(Failure::Protocol);
+        }
+    }
+    if candidate.route.evidence.requests.load(Ordering::Acquire) != 0 {
+        return Err(Failure::Unsafe);
+    }
+    Ok(entries)
 }
 
 #[derive(Clone, Serialize)]
@@ -358,6 +528,92 @@ fn run_probe(
             exit,
         },
     )
+}
+
+/// Loopback/temporary CA exist only in a test binary, never an application env flag.
+#[cfg(all(test, windows))]
+pub(crate) fn provider_acceptance_probe(
+    root: &Path,
+    exe: &Executable,
+    id: &str,
+    revision: i64,
+    credential_revision: i64,
+    endpoint: &str,
+    model: &str,
+    effort: &str,
+    secret: SecretBuffer,
+    ca: Vec<u8>,
+    cancel: Cancel,
+) -> std::result::Result<(), ErrorCode> {
+    let selected = Selection {
+        profile_id: id.into(),
+        config_revision: revision,
+        credential_revision,
+        endpoint: endpoint.into(),
+        origin: Url::parse(endpoint)
+            .map_err(|_| ErrorCode::ProviderEndpointInvalid)?
+            .origin()
+            .ascii_serialization(),
+        model: model.into(),
+        effort: effort.into(),
+        fixture: true,
+        fixture_ca: Some(ca),
+    };
+    let e = run_probe(
+        root,
+        exe,
+        selected,
+        secret,
+        None,
+        cancel,
+        Duration::from_secs(25),
+    )
+    .map_err(Failure::code)?;
+    if e.requests == 0
+        || e.verified_responses == 0
+        || !e.exit.cleaned
+        || e.exit.forced
+        || e.exit.code != Some(0)
+    {
+        return Err(ErrorCode::ProviderTestFailed);
+    }
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn provider_acceptance_catalog(
+    root: &Path,
+    exe: &Executable,
+    endpoint: &str,
+    ca: Vec<u8>,
+) -> std::result::Result<Vec<CatalogEntry>, ErrorCode> {
+    let selected = Selection {
+        profile_id: "catalog-acceptance".into(),
+        config_revision: 1,
+        credential_revision: 1,
+        endpoint: endpoint.into(),
+        origin: Url::parse(endpoint).unwrap().origin().ascii_serialization(),
+        model: "catalog-discovery".into(),
+        effort: "medium".into(),
+        fixture: true,
+        fixture_ca: Some(ca),
+    };
+    let mut candidate = Candidate::start(
+        root,
+        exe,
+        selected,
+        SecretBuffer::new(random_token().map_err(Failure::code)?.into_bytes()),
+        None,
+        Cancel::default(),
+        Duration::from_secs(45),
+    )
+    .map_err(Failure::code)?;
+    let result = read_catalog(&mut candidate);
+    let exit = candidate.close().map_err(Failure::code)?;
+    if exit.forced || exit.code != Some(0) {
+        return Err(ErrorCode::ProcessExitFailed);
+    }
+    result.map_err(Failure::code)
 }
 
 /// Until project configuration support is separately verified, any .codex layer

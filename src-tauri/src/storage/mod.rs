@@ -17,7 +17,7 @@ pub use repositories::{
 };
 
 pub const DATABASE_NAME: &str = "project-assistant.sqlite3";
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 struct Migration {
     version: i64,
@@ -26,6 +26,7 @@ struct Migration {
 }
 
 const MIGRATIONS: &[Migration] = &[
+    // Append only; released SQL/checksums below remain unchanged.
     Migration {
         version: 1,
         name: "initial",
@@ -41,7 +42,38 @@ const MIGRATIONS: &[Migration] = &[
         name: "credentials",
         sql: include_str!("../../migrations/0003_credentials.sql"),
     },
+    Migration {
+        version: 4,
+        name: "providers",
+        sql: include_str!("../../migrations/0004_providers.sql"),
+    },
 ];
+
+pub(crate) fn audit_time() -> Result<i64, StorageError> {
+    repositories::audit_now_ms()
+}
+pub(crate) fn provider_audit(
+    c: &Connection,
+    id: &str,
+    kind: &str,
+    profile: Option<&str>,
+    outcome: &str,
+) -> Result<(), StorageError> {
+    let at = repositories::audit_now_ms()?;
+    repositories::prune_expired_in_transaction(c, at)?;
+    repositories::record_in_transaction(
+        c,
+        AuditEventInput {
+            id: &repositories::new_audit_id(),
+            correlation_id: id,
+            event_kind: kind,
+            outcome,
+            error_code: None,
+            profile_id: profile,
+        },
+        at,
+    )
+}
 
 #[derive(Debug)]
 pub struct StorageError {

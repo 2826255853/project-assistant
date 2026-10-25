@@ -181,6 +181,27 @@ pub fn status(app: &tauri::AppHandle, private_draft: bool) -> AppStatus {
     let data = state.0.lock().unwrap();
     let mut result = data.snapshot(overlay::view(app), private_draft, storage_state(app));
     if !app.state::<crate::desktop::DesktopState>().phase0 {
+        let provider = result
+            .services
+            .iter_mut()
+            .find(|s| s.id == "providers")
+            .unwrap();
+        match crate::providers::config_state(app) {
+            Ok(state) => {
+                result.config_state = match state.as_str() {
+                    "ready" => "ready",
+                    "degraded" => "degraded",
+                    "error" => "error",
+                    _ => "unconfigured",
+                };
+                provider.state = "ready";
+                provider.reason_code = None;
+            }
+            Err(_) => {
+                provider.state = "unavailable";
+                provider.reason_code = Some("PA_SETTINGS_STORAGE_FAILED");
+            }
+        }
         let logs = app.state::<crate::logging::LoggingState>().status();
         let logging = result
             .services

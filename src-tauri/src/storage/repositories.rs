@@ -252,6 +252,7 @@ impl<'a> ProfileRepository<'a> {
                     [profile_id],
                 )
                 .map_err(sql_error)?;
+            transaction.execute("UPDATE ai_runtime SET profile_id=NULL,profile_revision=NULL,model_id=NULL,effort=NULL,credential_revision=NULL,adapter_version=NULL,tested_at=NULL WHERE profile_id=?1",[profile_id]).map_err(sql_error)?;
             let at = audit_now_ms()?;
             prune_expired_in_transaction(&transaction, at)?;
             record_credential_commit(&transaction, correlation_id, profile_id, at)?;

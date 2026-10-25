@@ -1,6 +1,8 @@
 # 本机项目助手 · 桌面基础
 
-步骤 1.1–1.5 已分别实现桌面主框架、正式 IPC/状态、数据库恢复、全局设置以及错误呈现/日志/审计/清理。步骤 1.6 系统凭据库及安全引用已于 2026-10-19 通过本机合成凭据验收，并于 2026-10-20 在固定工具链基线完成收尾复验。步骤 1.7 已实现 Rust 自有 stdio 候选适配器、当前用户专属 home、环境/项目覆盖拒绝及每候选独立固定上游转发层；实际 CLI 与两个合成 HTTPS 站点覆盖参数/Key 绑定、外部夹具共存、重定向拒绝和清理。真实 Key、profile 和任务入口继续受限；1.8 的 profile/能力/切换恢复尚未接入。步骤 1.1/1.4 的真实托盘、物理显示器和实时 DPI 仍待 1.10 人工复核。详细规划以 [计划文档 v1.5](计划文档.txt)、[步骤 1.7 实施记录](docs/phase-1/step-1.7.md) 和 [替代方案 ADR-0011](docs/phase-0/self-managed-profile-adr.md) 为准。
+阶段 2 步骤 2.1（项目契约与授权模型）已于 2026-10-25 完成定义；项目业务命令尚未开放，2.2–2.9 仍待实施。契约、错误及权限边界见 [步骤 2.1 记录](docs/phase-2/step-2.1.md) 和 [计划文档第 22 章](计划文档.txt)。
+
+步骤 1.1–1.5 已分别实现桌面主框架、正式 IPC/状态、数据库恢复、全局设置以及错误呈现/日志/审计/清理。步骤 1.6 系统凭据库及安全引用已于 2026-10-19 通过本机合成凭据验收，并于 2026-10-20 在固定工具链基线完成收尾复验。步骤 1.7 已实现 Rust 自有 stdio 候选适配器、当前用户专属 home、环境/项目覆盖拒绝及每候选独立固定上游转发层；实际 CLI 与两个合成 HTTPS 站点覆盖参数/Key 绑定、外部夹具共存、重定向拒绝和清理。真实 Key、profile 和任务入口继续受限；1.8 已完成 profile/能力/FIFO 切换恢复及不可变快照，1.9 已接入 AI 配置页、凭据表单、能力选择、连接测试和默认切换状态展示。步骤 1.1/1.4 的真实托盘、物理显示器和实时 DPI 仍待 1.10 人工复核。详细规划以 [计划文档 v1.5](计划文档.txt)、[步骤 1.8 实施记录](docs/phase-1/step-1.8.md)、[步骤 1.9 实施记录](docs/phase-1/step-1.9.md) 和 [替代方案 ADR-0011](docs/phase-0/self-managed-profile-adr.md) 为准。
 
 步骤 1.2（S1-02）已接通正式 IPC、服务状态查询和版本化事件；主窗口与悬浮入口共享服务状态，事件缺口和窗口重建可重新查询恢复。详情见 [验收记录](docs/phase-1/step-1.2.md) 与 [正式契约及命令授权矩阵](docs/phase-1/ipc-state-contract.md)。复现入口为 `npm run verify:state`，报告位于 `artifacts/phase-1-2/report.json`。
 
@@ -52,7 +54,7 @@ $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 
 ## 可重复验证
 
-步骤 1.7 隔离验收入口为 `npm run verify:isolation`，报告位于 `artifacts/phase-1-7/report.json`。它使用正式 Rust 适配器、实际 CLI 和两个一次性合成 HTTPS 站点，不调用真实模型、不读取外部配置、不使用真实 Key；包括 release check 和 dev/built 桌面。测试证书仅在 `cfg(test)` 客户端中信任，不安装到 Windows；需要 Git 所带 OpenSSL，详见 [步骤 1.7](docs/phase-1/step-1.7.md)。`--routes-only` 只作路由调试，不能替代完整入口。
+步骤 1.7 隔离验收入口为 `npm run verify:isolation`，报告位于 `artifacts/phase-1-7/report.json`。它使用正式 Rust 适配器、实际 CLI 和两个一次性合成 HTTPS 站点，不调用真实模型、不读取外部配置、不使用真实 Key；包括 release check 和 dev/built 桌面。测试证书仅在 `cfg(test)` 客户端中信任，不安装到 Windows；需要 Git 所带 OpenSSL，详见 [步骤 1.7](docs/phase-1/step-1.7.md)。`--routes-only` 只作路由调试，报告单独写到 `artifacts/phase-1-7-routes-only/report.json`，不能替代完整入口。
 
 步骤 1.6 凭据收尾入口为 `npm run verify:credentials`，报告位于 `artifacts/phase-1-6/report.json`。该入口只使用临时合成凭据，覆盖独立进程与 dev/built 桌面，并清理确切自有记录；系统服务/权限失败采用适配层注入。2026-10-20 已在固定基线 Node/npm 24.18.0/11.16.0、Rust 1.99.0 下通过该入口和 `verify:storage`，补齐此前的版本差异复验，详情见 [步骤 1.6](docs/phase-1/step-1.6.md)。
 
@@ -215,4 +217,18 @@ npm run test:ipc
 
 步骤 1.3（S1-03）已接入正常启动数据库、类型化仓储和启动恢复；数据库失败保持原库并返回固定 storage 原因码。步骤 1.4 追加 schema v2，步骤 1.5 已接入日志与审计；步骤 1.6 追加 schema v3 并通过 Windows Credential Manager、专用 IPC 和跨存储补偿验收。各步骤范围及未验收项分别见对应 `docs/phase-1/step-1.*.md`。
 
-步骤 0.3、0.7 及阶段 0 按替代范围通过；系统凭据持久化已按步骤 1.6 当前范围通过，自有候选进程/配置层路由隔离已在 1.7 接入，完整切换恢复和真实任务仍待 1.8/阶段 3 验收。阶段 0 历史决策见 [阶段门评审](docs/phase-0/phase-gate-review.md)，最新实现以阶段 1 记录为准。
+步骤 0.3、0.7 及阶段 0 按替代范围通过；系统凭据持久化已按步骤 1.6 当前范围通过，自有候选进程/配置层路由隔离已在 1.7 接入，1.8 配置层切换恢复已通过，真实任务仍待阶段 3 验收。阶段 0 历史决策见 [阶段门评审](docs/phase-0/phase-gate-review.md)，最新实现以阶段 1 记录为准。
+
+## 步骤 1.8：profile、能力、切换恢复与快照
+
+九个 main-only 命令、隔离 CLI 模型目录、五分钟组合证据、八项 FIFO、取消/等待、三类恢复及不可变快照已接入。schema v4 仅追加；旧迁移和 lock 不变。启动不发请求、不重放，持久默认需重新核验。非空默认仅经 provider_switch 提交，settings_get 返回完整选择，其他设置修改保留它。
+
+完整入口：npm run verify:providers；报告 artifacts/phase-1-8/report.json。实际 CLI/双合成 HTTPS/合成 Key；恢复与任务占用用生产状态机注入/合成任务。另复验 verify:storage、verify:settings。记录见 [步骤 1.8](docs/phase-1/step-1.8.md)。1.9 页面记录见 [步骤 1.9](docs/phase-1/step-1.9.md)；阶段 3 真实任务、1.10 人工硬件仍待，不代表 M1/阶段 1 完成。
+
+## 阶段 1 汇总回归与移交
+
+```powershell
+npm run verify:phase-1
+```
+
+该 Windows 入口按顺序运行 1.1 shell、1.2 IPC/state、1.3 storage、1.4 settings、1.5 logging、1.6 credentials、1.7 isolation 和 1.8/1.9 providers 的既有完整验收套件，并核对每份子报告的 `passed=true`。它会启动真实 dev/built Tauri 窗口、构建资源、执行受控系统打开场景和合成 HTTPS/凭据测试；运行前请关闭本项目已有桌面窗口并释放 1420 端口。汇总报告及各套件控制台输出位于 `artifacts/phase-1/`，详细证据保留在各步骤的 `artifacts/` 子目录。汇总入口不将注入结果视为物理硬件实测；Windows 托盘鼠标、多显示器移动/拔插及实时 DPI 仍按 [步骤 1.10](docs/phase-1/step-1.10.md) 进行人工记录。AI 配置页控件也需在真实 WebView2 中点验。

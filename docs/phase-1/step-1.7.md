@@ -44,6 +44,8 @@ npm run verify:isolation
 npm run verify:isolation -- --routes-only
 ```
 
+`--routes-only` 的临时报告位于 `artifacts/phase-1-7-routes-only/report.json`，不会覆盖 `validation=full` 的正式验收报告。
+
 依赖固定 Node/npm/Rust 基线、Windows 桌面依赖、实际 Codex CLI 和 Git 所带 OpenSSL。仅验证脚本用 `CODEX_BIN` 选择实际 CLI；正常产品不从该变量导入连接。测试 OpenSSL 默认位于 `%ProgramFiles%\Git\usr\bin\openssl.exe`，可用 `PA_ISOLATION_OPENSSL_BIN` 指定绝对路径。两站点使用一次性自签证书；证书只注入 `cfg(test)` 上游客户端，不安装到用户证书库，不影响生产 TLS 信任。生产构建无法通过环境变量开启 loopback/自签 CA 放行。
 
 验收密钥均为随机 `synthetic-isolation-*`；每个实际路由 worker 先通过正式 SQLite/Windows 凭据服务写入、错误 origin 拒绝、读回与删除，随后使用已解析的合成值。两个 HTTPS 站点分别核对 Authorization、path、model、reasoning.effort；报告仅记录匹配布尔、参数和进程白名单，不保存原始请求、输出、Key 或证书私钥。外部 config/auth/cc-switch 版本均为隔离夹具，不访问用户实际文件或 cc-switch 实例。

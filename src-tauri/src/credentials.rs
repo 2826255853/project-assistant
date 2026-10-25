@@ -401,10 +401,41 @@ pub(crate) fn isolation_fixture_secret(
 }
 
 trait CredentialStore {
+    // No webview or production entry can access acceptance-only helpers.
     fn read(&self, binding: &Binding) -> Result<Option<SecretBuffer>, platform::Failure>;
     fn write(&self, binding: &Binding, secret: &str) -> Result<(), platform::Failure>;
     fn write_blob(&self, binding: &Binding, blob: SecretBuffer) -> Result<(), platform::Failure>;
     fn delete(&self, binding: &Binding) -> Result<(), platform::Failure>;
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn provider_fixture_secret(
+    db: &mut storage::Storage,
+    profile: &str,
+    secret: &str,
+) -> SecretBuffer {
+    let _guard = OS_TEST_LOCK.lock().unwrap();
+    assert!(secret.starts_with("synthetic-provider-"));
+    let b = read_binding(db, profile).unwrap();
+    assert_eq!(b.credential_revision, 1);
+    assert!(
+        platform::read(&b).unwrap().is_none(),
+        "fixture target already exists"
+    );
+    struct Cleanup(Binding);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = platform::delete(&self.0);
+        }
+    }
+    let cleanup = Cleanup(b.clone());
+    platform::write(&b, secret).unwrap();
+    let resolved =
+        resolve_in_storage(db, profile, b.credential_revision, &b.origin, &SystemStore).unwrap();
+    platform::delete(&b).unwrap();
+    assert!(platform::read(&b).unwrap().is_none());
+    drop(cleanup);
+    resolved
 }
 
 struct SystemStore;

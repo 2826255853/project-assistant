@@ -12,13 +12,14 @@ import { verifyIpcDesktop } from "./ipc/desktop.mjs";
 import { verifySettingsDesktop } from "./ipc/settings-desktop.mjs";
 import { verifyLoggingDesktop } from "./ipc/logging-desktop.mjs";
 import { verifyCredentialsDesktop } from "./ipc/credentials-desktop.mjs";
+import { verifyProvidersDesktop } from "./ipc/providers-desktop.mjs";
 
 assert.equal(process.platform, "win32", "This test requires Windows and WebView2.");
 assert.ok(process.env.npm_execpath, "Run this script with npm run verify:desktop.");
 const mode = process.argv[2] ?? "dev";
 assert.ok(["dev", "built"].includes(mode), "Expected dev or built.");
 const scenario = process.argv[3] ?? "phase0";
-assert.ok(["phase0", "shell", "shell-error", "ipc", "settings-write", "settings-read", "settings-enabled", "logging", "credentials"].includes(scenario));
+assert.ok(["phase0", "shell", "shell-error", "ipc", "settings-write", "settings-read", "settings-enabled", "logging", "credentials", "providers"].includes(scenario));
 const shell = scenario !== "phase0";
 const settingsScenario = scenario.startsWith("settings-");
 const root = resolve(import.meta.dirname, "..");
@@ -35,14 +36,14 @@ const sharedFixtureDirectory = settingsScenario ? process.env.PA_SETTINGS_VERIFY
 assert.ok(!settingsScenario || sharedFixtureDirectory, "Settings scenarios require an isolated shared fixture directory");
 const overlayFixtureDirectory = sharedFixtureDirectory || (shell ? await mkdtemp(resolve(tmpdir(), "project-assistant-ipc-")) : "");
 const remote = createHttpServer((_, response) => { response.end('<!doctype html><title>IPC remote fixture</title><p>Local verification fixture</p>'); });
-if (["ipc", "credentials"].includes(scenario)) await new Promise(done => remote.listen(0, "127.0.0.1", done));
+if (["ipc", "credentials", "providers"].includes(scenario)) await new Promise(done => remote.listen(0, "127.0.0.1", done));
 const env = {
   ...process.env,
   PA_DESKTOP_MODE: shell ? "normal" : "phase0",
   PA_SHELL_FAIL_ONCE: scenario === "shell-error" ? "1" : "0",
   PA_IPC_VERIFY: shell ? "1" : "0",
   PA_OVERLAY_VERIFY_DIR: overlayFixtureDirectory,
-  PA_IPC_REMOTE_URL: ["ipc", "credentials"].includes(scenario) ? `http://127.0.0.1:${remote.address().port}/` : "",
+  PA_IPC_REMOTE_URL: ["ipc", "credentials", "providers"].includes(scenario) ? `http://127.0.0.1:${remote.address().port}/` : "",
   CARGO_TERM_COLOR: "never",
   CARGO_TERM_PROGRESS_WHEN: "never",
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1`,
@@ -113,7 +114,7 @@ try {
     return result.result.value;
   }
   let wire;
-  if (shell && !settingsScenario && !["logging", "credentials"].includes(scenario)) {
+  if (shell && !settingsScenario && !["logging", "credentials", "providers"].includes(scenario)) {
     if (scenario === "shell-error") {
       const error = await until(() => evaluate("document.querySelector('[data-testid=startup-error]')?.textContent"), Boolean);
       assert.match(error, /PA_DESKTOP_INITIALIZATION_FAILED/);
@@ -154,12 +155,14 @@ try {
       await until(() => evaluate("document.querySelector('.main-area')?.dataset.page"), (current) => current === page);
       assert.equal(await evaluate("document.querySelector('nav [aria-current=page]').dataset.page"), page);
       assert.equal(await evaluate("document.activeElement.id"), "page-heading");
-      if (page !== "home" && page !== "settings") assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=state-unavailable]'))"), true);
-      if (page === "ai") assert.equal(await evaluate("document.querySelectorAll('input').length"), 0);
+      if (page === "projects") assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=state-unavailable]'))"), true);
+      if (page === "ai") {
+        assert.equal(await evaluate("Boolean(document.querySelector('.ai-config-page [data-testid=ai-config-status]'))"), true);
+      }
       if (page === "settings") await until(() => evaluate("document.querySelector('.settings-form fieldset')?.disabled"), value => value === false);
     }
     assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true);
-    report.results.push("项目/AI/设置/服务状态/概览导航和焦点正确；未就绪表单禁用，无秘密输入");
+    report.results.push("项目/AI 配置/设置/服务状态/概览导航和焦点正确；AI 配置状态组件已加载");
     const overlayTarget = await until(async () => {
       const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
       return (await response.json()).find((item) => item.url.includes("window=overlay"));
@@ -179,16 +182,19 @@ try {
     assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('plugin:window|is_visible', { label: 'overlay' })"), true);
     assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('desktop_initialize', { request: { apiVersion: 1, params: {} } }).then(() => false, () => true)"), true);
     report.results.push("首次默认创建独立置顶悬浮球，overlay capability 拒绝 main 初始化命令");
+    const verifyShortcut = "Ctrl+Alt+F10";
+    const baselineShortcut = await evaluate(`window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'set_shortcut', shortcut: '${verifyShortcut}' } } })`);
+    assert.equal(baselineShortcut.status, "ok", "Acceptance shortcut must be available to this process");
     const invalidShortcut = await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'set_shortcut', shortcut: 'not-a-shortcut' } } })");
     assert.equal(invalidShortcut.error.code, "PA_SHORTCUT_INVALID");
-    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcut)"), "Ctrl+Alt+Space");
+    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcut)"), verifyShortcut);
     report.results.push("非法快捷键被拒绝并显示固定错误，原快捷键保留");
     const conflictShortcut = await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'set_shortcut', shortcut: 'Ctrl+Alt+Delete' } } })");
     assert.equal(conflictShortcut.error.code, 'PA_SHORTCUT_CONFLICT');
     await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcutError)"), (value) => value === "PA_SHORTCUT_CONFLICT");
-    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcut)"), "Ctrl+Alt+Space");
+    assert.equal(await overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcut)"), verifyShortcut);
     report.results.push("Windows 保留快捷键冲突被拒绝并提示更换组合，原快捷键保留");
-    await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'set_shortcut', shortcut: 'Ctrl+Alt+Space' } } })");
+    await evaluate(`window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'set_shortcut', shortcut: '${verifyShortcut}' } } })`);
     await until(() => overlayEval("window.__TAURI_INTERNALS__.invoke('overlay_get', { request: { apiVersion: 1, params: {} } }).then(r => r.data).then(s => s.shortcutError)"), (value) => value === null);
     await overlayEval("document.querySelector('.floating-ball').click()");
     await until(() => overlayEval("document.activeElement.id"), (id) => id === "overlay-draft");
@@ -227,6 +233,8 @@ try {
       });
     }
     if (scenario === "shell-error") await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'disable' } } })");
+  } else if (scenario === "providers") {
+    await verifyProvidersDesktop({evaluate,until,report,debugPort,receive,cdp,mainUrl:target.url});
   } else if (scenario === "credentials") {
     await verifyCredentialsDesktop({ evaluate, until, report, debugPort, receive, cdp, mainUrl: target.url, fixtureDirectory: overlayFixtureDirectory });
   } else if (scenario === "logging") {
@@ -282,7 +290,7 @@ try {
   // Match the exact executable path, then send normal WM_CLOSE via CloseMainWindow.
   const exe = resolve(root, "src-tauri", "target", "debug", "project-assistant.exe");
   const psPath = `'${exe.replaceAll("'", "''")}'`;
-  const useExitButton = shell && (["shell", "ipc", "logging", "credentials"].includes(scenario) || settingsScenario);
+  const useExitButton = shell && (["shell", "ipc", "logging", "credentials", "providers"].includes(scenario) || settingsScenario);
   if (useExitButton) await evaluate("document.querySelector('.exit-button').click()");
   const close = spawnSync("powershell.exe", ["-NoProfile", "-Command", `
     $p = @(Get-Process -Name 'project-assistant' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ${psPath} });
@@ -313,7 +321,7 @@ try {
   report.passed = true;
   console.log(report.results.join("\n"));
 } catch (error) {
-  report.error = String(error);
+  report.error = error instanceof Error ? error.stack ?? String(error) : String(error);
   console.error(error);
   process.exitCode = 1;
 } finally {

@@ -38,13 +38,23 @@ fn read(connection: &Connection) -> Result<View, ErrorCode> {
         let row_revision: i64 = row.get(6).map_err(sql)?;
         if row_revision > revision
             || row_revision < 1
-            || profile.is_some()
-            || model.is_some()
-            || effort.is_some()
+            || (key != "ai_defaults" && (profile.is_some() || model.is_some() || effort.is_some()))
         {
             return Err(ErrorCode::SettingsCorrupt);
         }
         let corrupt = || ErrorCode::SettingsCorrupt;
+        if key == "ai_defaults" {
+            if text.is_some() || integer.is_some() {
+                return Err(corrupt());
+            }
+            let selection =
+                crate::providers::default_selection(connection, None)?.ok_or_else(corrupt)?;
+            selection.validate().map_err(|_| corrupt())?;
+            view.replace(Change::AiDefaults(Some(
+                serde_json::to_value(selection).map_err(|_| corrupt())?,
+            )));
+            continue;
+        }
         let change = match key.as_str() {
             "search_engine" if integer.is_none() => Change::SearchEngine(text.ok_or_else(corrupt)?),
             "project_sort" if integer.is_none() => Change::ProjectSort(text.ok_or_else(corrupt)?),
@@ -118,6 +128,7 @@ fn write(connection: &Connection, view: &View) -> Result<(), ErrorCode> {
                 Some(serde_json::to_string(v).map_err(|_| ErrorCode::SettingsInvalidValue)?),
                 None,
             ),
+            Change::AiDefaults(Some(_)) => continue, // only provider_switch can commit non-null defaults
             Change::Editor(None) | Change::AiDefaults(None) => {
                 connection
                     .execute(
@@ -220,6 +231,7 @@ impl SettingsRepository<'_> {
                         | Change::LogLevel(_)
                         | Change::SummaryRetentionDays(_)
                         | Change::Editor(Some(_))
+                        | Change::AiDefaults(Some(_))
                 )
             })
             .count() as i64;
@@ -285,6 +297,12 @@ impl SettingsRepository<'_> {
         prune_expired_in_transaction(&transaction, at).map_err(|_| ErrorCode::AuditWriteFailed)?;
         record_settings_commit(&transaction, id, at).map_err(|_| ErrorCode::AuditWriteFailed)?;
         write(&transaction, &next)?;
+        if changes
+            .iter()
+            .any(|v| matches!(v, Change::AiDefaults(None)))
+        {
+            transaction.execute("UPDATE ai_runtime SET blocked=0,profile_id=NULL,profile_revision=NULL,model_id=NULL,effort=NULL,credential_revision=NULL,adapter_version=NULL,tested_at=NULL WHERE id=1",[]).map_err(sql)?;
+        }
         transaction
             .execute(
                 "UPDATE settings_revisions SET revision=?1 WHERE scope='global'",

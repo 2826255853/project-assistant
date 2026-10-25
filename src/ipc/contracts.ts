@@ -14,7 +14,7 @@ export type SourceKind = "relay" | "official";
 export type ConfigState = "unconfigured" | "checking" | "ready" | "switching" | "degraded" | "error";
 export interface CredentialState { status: "missing" | "configured_unverified" | "verified" | "invalid" | "external_unavailable"; revision: number }
 export interface ProviderProfile {
-  id: string; name: string; sourceKind: SourceKind; adapterKind: "self_managed";
+  id: string; name: string; sourceKind: SourceKind; adapterKind: "self_managed" | "cc_switch";
   endpoint: string; wireApi: "responses"; authKind: "api_key" | "external_login";
   defaultModel: string | null; defaultEffort: string | null; enabled: boolean; configRevision: number;
   credential: CredentialState; available: boolean; unavailableCode: string | null;
@@ -79,9 +79,30 @@ export interface ManualCcSwitchStatus {
 }
 
 export interface ActiveContext { projectId: string; sessionId: string; profileId: string; modelId: string; effort: string | null }
+// Phase 2 project DTOs are compile-time contracts only until each project
+// service is implemented and added to ImplementedCommandMap.
+export type ProjectAvailability = "available" | "missing" | "inaccessible" | "identity_changed";
+export type ProjectAuthorization = "granted" | "requires_reauthorization" | "revoked";
+export interface ProjectView {
+  id: string; name: string; displayName: string | null; absolutePath: string;
+  availability: ProjectAvailability; authorization: ProjectAuthorization; revision: number;
+  createdAt: number; lastUsedAt: number | null;
+}
+export interface ProjectListPage { items: ProjectView[]; nextCursor: string | null }
+export interface ActiveProject { projectId: string; name: string }
+export type GitSummary =
+  | { state: "available"; isRepository: true; branch: string | null; detached: boolean; workingTreeModified: boolean; refreshedAt: number }
+  | { state: "not_repository" | "git_unavailable" | "timed_out" | "failed"; isRepository: false | null; branch: null; detached: false; workingTreeModified: null; refreshedAt: number | null };
+type ProjectSettingChange = Exclude<SettingChange, Extract<SettingChange, { key: "overlay_enabled" | "overlay_shortcut" | "overlay_position" }>>;
+type WithProjectSettingSource<Change> = Change extends { key: infer Key; value: infer Value }
+  ? { key: Key; value: Value; source: "project" | "global" }
+  : never;
+export type ProjectSetting = WithProjectSettingSource<ProjectSettingChange>;
+export interface ProjectSettingsView { projectId: string; revision: number; globalRevision: number; values: ProjectSetting[] }
+export type ProjectAwareAppStatus = AppStatus & { activeProject: ActiveProject | null };
 export interface ServiceStatus { id: "desktop" | "ipc" | "events" | "overlay" | "storage" | "settings" | "logging" | "credentials" | "providers" | "codex" | "projects" | "tasks"; state: "ready" | "unavailable" | "degraded"; reasonCode: string | null }
 export interface AppStatus {
-  apiVersion: 1; streamId: string; sequence: number; configState: "unconfigured";
+  apiVersion: 1; streamId: string; sequence: number; configState: ConfigState;
   services: ServiceStatus[]; ccSwitch: ManualCcSwitchStatus;
   activeContext: ActiveContext | null; taskStatus: "idle"; overlay: OverlayView;
 }
@@ -90,6 +111,15 @@ export type OverlayAction =
   | { action: "set_shortcut"; shortcut: string }
   | { action: "draft"; draft: string };
 export interface ImplementedCommandMap {
+  providers_list: CommandMap["providers_list"];
+  provider_save: CommandMap["provider_save"];
+  provider_set_enabled: CommandMap["provider_set_enabled"];
+  provider_delete: CommandMap["provider_delete"];
+  provider_models: CommandMap["provider_models"];
+  provider_test: CommandMap["provider_test"];
+  provider_switch: CommandMap["provider_switch"];
+  operation_get: CommandMap["operation_get"];
+  operation_cancel: CommandMap["operation_cancel"];
   framework_probe: { params: { message: string }; data: ProbeReply };
   desktop_initialize: { params: Record<string, never>; data: DesktopReady };
   app_get_status: { params: Record<string, never>; data: AppStatus };
@@ -103,6 +133,10 @@ export interface ImplementedCommandMap {
   credential_put: { params: { profileId: string; expectedRevision: number; secret: string }; data: { credential: CredentialState; configRevision: number } };
   credential_remove: { params: { profileId: string; expectedRevision: number }; data: { credential: CredentialState; configRevision: number } };
 }
+type Assert<T extends true> = T;
+export type ProjectCommandsRemainUnimplemented = Assert<
+  Extract<keyof ImplementedCommandMap, `project${string}` | `projects${string}`> extends never ? true : false
+>;
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.
 export interface CommandMap {
@@ -110,7 +144,7 @@ export interface CommandMap {
   app_get_status: ImplementedCommandMap["app_get_status"];
   logs_get_status: ImplementedCommandMap["logs_get_status"];
   logs_clear: ImplementedCommandMap["logs_clear"];
-  settings_get: { params: SettingsScope; data: SettingsView };
+  settings_get: { params: SettingsScope; data: SettingsView | ProjectSettingsView };
   settings_update: { params: SettingsScope & { expectedRevision: number; changes: SettingChange[] }; data: SettingsView };
   providers_list: { params: Record<string, never>; data: { profiles: ProviderProfile[]; active: AiSelection | null; configState: ConfigState } };
   provider_save: { params: { profileId: string | null; expectedRevision: number | null; name: string; endpoint: string; defaultModel: string | null; defaultEffort: string | null }; data: ProviderProfile };
@@ -128,6 +162,16 @@ export interface CommandMap {
   task_get: { params: { taskId: string }; data: TaskView };
   task_cancel: { params: { taskId: string }; data: { accepted: boolean; status: TaskStatus } };
   approval_decide: { params: { approvalId: string; taskId: string; operationFingerprint: string; decision: "approve" | "deny" }; data: { decision: "approved" | "denied" | "expired" } };
+  // Planned project commands: types are not a runtime allow-list.
+  projects_add_from_picker: { params: Record<string, never>; data: { outcome: "registered"; project: ProjectView } | { outcome: "cancelled" } };
+  projects_list: { params: { query?: string; cursor?: string; limit?: number }; data: ProjectListPage };
+  project_get: { params: { projectId: string }; data: ProjectView };
+  project_select: { params: { projectId: string }; data: { activeProject: ActiveProject } };
+  project_remove: { params: { projectId: string; expectedRevision: number }; data: { removed: true; retainedForHistory: boolean } };
+  project_open_directory: { params: { projectId: string }; data: { systemAccepted: true } };
+  project_pick_file: { params: { projectId: string }; data: { relativePath: string } | { outcome: "cancelled" } };
+  project_open_file: { params: { projectId: string; relativePath: string }; data: { systemAccepted: true } };
+  project_git_summary: { params: { projectId: string; refresh?: boolean }; data: GitSummary };
 }
 export type EventPayload =
   | { type: "app_state_changed" }

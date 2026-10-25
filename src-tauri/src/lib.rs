@@ -5,10 +5,318 @@ pub mod ipc;
 mod logging;
 mod overlay;
 mod owned_process;
+pub mod project_contract;
+mod providers;
 pub mod safety;
 mod settings;
 pub mod storage;
 use tauri::Manager;
+
+#[tauri::command]
+async fn providers_list(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<providers::ProviderList> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<ipc::EmptyParams>(request)
+    })();
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = (&p, &i);
+                providers::list(&a)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "providers_list", id, result)
+}
+
+#[tauri::command]
+async fn provider_save(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<providers::Profile> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<providers::Save>(request)
+    })();
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = (&p, &i);
+                providers::save(&a, p, &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "provider_save", id, result)
+}
+
+#[tauri::command]
+async fn provider_set_enabled(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<providers::Profile> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<providers::Enabled>(request)
+    })();
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = (&p, &i);
+                providers::set_enabled(&a, p, &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "provider_set_enabled", id, result)
+}
+
+#[tauri::command]
+async fn provider_delete(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<providers::Removed> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<providers::ProfileRequest>(request)
+    })();
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = (&p, &i);
+                providers::delete(&a, p, &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "provider_delete", id, result)
+}
+
+#[tauri::command]
+async fn provider_models(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<providers::Models> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<providers::ModelsRequest>(request)
+    })();
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = (&p, &i);
+                providers::models(&a, p, &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "provider_models", id, result)
+}
+
+#[tauri::command]
+async fn provider_test(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<providers::Receipt> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<providers::Selection>(request)
+    })();
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = (&p, &i);
+                providers::submit(&a, p, "test", &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "provider_test", id, result)
+}
+
+#[tauri::command]
+async fn provider_switch(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<providers::Receipt> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<providers::Selection>(request)
+    })();
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = (&p, &i);
+                providers::submit(&a, p, "switch", &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "provider_switch", id, result)
+}
+
+#[tauri::command]
+async fn operation_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<providers::OperationView> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<providers::OperationRequest>(request)
+    })();
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = (&p, &i);
+                providers::get_operation(&a, p)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "operation_get", id, result)
+}
+
+#[tauri::command]
+async fn operation_cancel(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<providers::Accepted> {
+    let id = ipc::correlation_id();
+    let parsed = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        ipc::parse_request::<providers::OperationRequest>(request)
+    })();
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = (&p, &i);
+                providers::cancel_operation(&a, p)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "operation_cancel", id, result)
+}
 
 #[tauri::command]
 async fn credential_put(
@@ -359,6 +667,7 @@ pub fn run() {
         .manage(logging::LoggingState::default())
         .manage(credentials::CredentialsState::default())
         .manage(owned_process::OwnedProcessState::default())
+        .manage(providers::ProvidersState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -390,6 +699,9 @@ pub fn run() {
                             eprintln!("PA_STORAGE_STARTUP_FAILED:{}", failure.public_code());
                         } else if let Err(code) = app.state::<owned_process::OwnedProcessState>().initialize(&data_dir) {
                             eprintln!("{}", serde_json::to_string(&code).unwrap_or_default());
+                        }
+                        if let Err(code)=providers::initialize(app.handle()){
+                            eprintln!("{}",serde_json::to_string(&code).unwrap_or_default());
                         }
                         settings::initialize(app.handle(), &data_dir);
                         let level = settings::get(app.handle())
@@ -464,6 +776,15 @@ pub fn run() {
             settings_update,
             logs_get_status,
             logs_clear,
+            providers_list,
+            provider_save,
+            provider_set_enabled,
+            provider_delete,
+            provider_models,
+            provider_test,
+            provider_switch,
+            operation_get,
+            operation_cancel,
             credential_put,
             credential_remove,
             overlay_get,

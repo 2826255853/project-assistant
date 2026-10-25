@@ -58,3 +58,13 @@ expectedRevision 作用于整个全局设置批次；未知字段/键、重复�
 修订冲突先重新读取 profile（读取服务随 1.8 接入），由用户再次确认提交；凭据变更不自动重发。占用自有任务时由 blocking worker 等待空闲，状态查询仍可响应；5 分钟未空闲返回 `PA_CREDENTIAL_BUSY`。客户端超时/停止等待不取消服务端操作。成功变更及服务不可用发布既有无载荷状态失效事件，完整 Key 不进入事件或诊断。
 
 固定错误：PA_CREDENTIALS_UNAVAILABLE、PA_CREDENTIAL_INVALID、PA_CREDENTIAL_PROFILE_NOT_FOUND、PA_CREDENTIAL_REVISION_CONFLICT、PA_CREDENTIAL_BUSY、PA_CREDENTIALS_STORAGE_FAILED；审计提交失败为 PA_AUDIT_WRITE_FAILED。失败补偿及验收范围见 `step-1.6.md`；本步骤通过不开放 AI 配置页或真实任务。
+
+## 步骤 1.8 配置服务补充（2026-10-22）
+
+九个正式 profile/operation 命令仅本地 main capability，Rust 再核验真实窗口；严格 IPC v1，不开放 task_start/快照写入。请求的 effort、profileId/expectedRevision、defaultModel/defaultEffort 可以 null，但仍必需。
+
+provider_models 是隔离 CLI 目录，最长 24 小时，修订/适配器变化失效，不产生 ready。test 主动请求，仅证明所选完整组合；switch 为最多八项 FIFO，receipt 不是成功。五分钟证据绑定完整选择、profile/凭据 revision、实际强度及能力/适配器版本。operation_get 为权威状态，失联不重发；unchanged/rolled_back/rollback_failed 在结果内区分。
+
+事件继续无载荷 app_state_changed，不广播配置/Key，查询 providers_list/operation_get 恢复。configState 接受 ConfigState，providers ready 不表示任务 ready。settings_get.ai_defaults 可返回完整选择，非空只由 provider_switch 提交；settings_update 拒绝非空直写、允许清空。旧“默认仅 null”“provider 未注册”均为历史步骤状态。
+
+启动不连接/重放，默认 degraded 并清旧证据；应用/恢复中断保持 rollback_failed、active=null、blocked。用户主动重新测试/切换或清默认，初始化恢复失败不开放 providers。见 [1.8 记录](step-1.8.md)。

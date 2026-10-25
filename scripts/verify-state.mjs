@@ -37,7 +37,12 @@ try {
     for (const privateValue of ["synthetic-secret-DO-NOT-LOG", "中文草稿", "synthetic-project"]) assert.equal(log.includes(privateValue), false, "IPC logs exclude payload");
     const entries = log.split(/\r?\n/).filter(line => line.startsWith('{"apiVersion":')).map(line => JSON.parse(line));
     assert.ok(entries.some(entry => entry.errorCode === "PA_IPC_VERSION_UNSUPPORTED"));
-    for (const entry of entries) assert.deepEqual(Object.keys(entry).sort(), ["apiVersion", "occurredAt", "level", "command", "event", "correlationId", "outcome", "errorCode"].sort());
+    for (const entry of entries) {
+      const allowed = entry.event === "logging_disabled"
+        ? ["apiVersion", "occurredAt", "level", "event", "outcome", "errorCode"]
+        : ["apiVersion", "occurredAt", "level", "command", "event", "correlationId", "outcome", "errorCode"];
+      assert.deepEqual(Object.keys(entry).sort(), allowed.sort());
+    }
   }
   report.checks.push("logs-allowlist-no-payload"); report.passed = true;
 } catch (error) { report.error = String(error); process.exitCode = 1; console.error(report.error); }

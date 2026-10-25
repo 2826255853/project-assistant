@@ -41,9 +41,12 @@ export async function verifyIpcDesktop({ evaluate, until, report, debugPort, rec
   const after = await evaluate(invoke("app_get_status"));
   assert.equal(after.data.sequence, status.data.sequence);
   assert.equal(after.data.overlay.enabled, true);
-  for (const run of [evaluate, overlayEval]) {
+  for (const [windowName, run] of [["main", evaluate], ["overlay", overlayEval]]) {
     assert.equal(await run("window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'project-assistant://event/v1', payload: {} }).then(() => false, () => true)"), true);
-    assert.equal(await run(invoke("credential_put", { secret: "synthetic-secret-DO-NOT-LOG" }) + ".then(() => false, () => true)"), true);
+    const denied = windowName === "main"
+      ? await run(invoke("credential_put", { secret: "synthetic-secret-DO-NOT-LOG" }) + ".then(result => result.status === 'error' && result.error.code === 'PA_IPC_INVALID_REQUEST', () => false)")
+      : await run(invoke("credential_put", { secret: "synthetic-secret-DO-NOT-LOG" }) + ".then(() => false, () => true)");
+    assert.equal(denied, true, `${windowName} must reject credential_put`);
   }
   report.results.push("正式状态/错误往返、严格字段/UTF-8 上限/版本、窗口职责及未实现命令/前端事件伪造均在副作用前拒绝，关联 ID 唯一");
 

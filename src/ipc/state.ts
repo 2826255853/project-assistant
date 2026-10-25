@@ -1,5 +1,6 @@
 import type { ActiveContext, AppEvent, AppStatus, OverlayView } from "./contracts.ts";
 import { isRecord } from "./response.ts";
+import { isConfigState } from "./providers.ts";
 import { errorForCode } from "./errors.ts";
 
 const bytes = (value: string) => new TextEncoder().encode(value).length;
@@ -18,7 +19,7 @@ function isContext(value: unknown): value is ActiveContext {
 }
 export function isAppStatus(value: unknown): value is AppStatus {
   const ids = ["desktop", "ipc", "events", "overlay", "storage", "settings", "logging", "credentials", "providers", "codex", "projects", "tasks"];
-  if (!isRecord(value) || value.apiVersion !== 1 || !cursorId(value.streamId) || !counter(value.sequence) || value.configState !== "unconfigured" ||
+  if (!isRecord(value) || value.apiVersion !== 1 || !cursorId(value.streamId) || !counter(value.sequence) || !isConfigState(value.configState) ||
     value.taskStatus !== "idle" || !isOverlayView(value.overlay) || !(value.activeContext === null || isContext(value.activeContext)) ||
     !Array.isArray(value.services) || value.services.length !== ids.length || !isRecord(value.ccSwitch)) return false;
   const cc = value.ccSwitch;

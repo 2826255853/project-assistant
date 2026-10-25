@@ -13,7 +13,7 @@ assert.equal(process.platform, "win32", "Isolation acceptance requires Windows")
 assert.ok(process.env.npm_execpath, "Run via npm run verify:isolation");
 const root = resolve(import.meta.dirname, "..");
 const routesOnly = process.argv.includes("--routes-only");
-const output = join(root, "artifacts", "phase-1-7");
+const output = join(root, "artifacts", routesOnly ? "phase-1-7-routes-only" : "phase-1-7");
 await mkdir(output, {recursive:true});
 const temporary = await mkdtemp(join(tmpdir(), "pa-isolation-"));
 const ownedRoot = join(temporary, "owned");
@@ -165,4 +165,4 @@ try {
   report.temporaryRemoved=true;
   await writeFile(join(output,"report.json"),JSON.stringify(report,null,2)+"\n");
 }
-console.log(`Isolation verification: ${report.passed?"passed":"failed"}; artifacts/phase-1-7/report.json`);
+console.log(`Isolation verification: ${report.passed?"passed":"failed"}; artifacts/${routesOnly?"phase-1-7-routes-only":"phase-1-7"}/report.json`);
