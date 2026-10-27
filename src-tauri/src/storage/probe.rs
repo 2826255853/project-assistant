@@ -7,7 +7,7 @@ use std::path::Path;
 pub fn seed(connection: &mut Connection) -> Result<(), StorageError> {
     let transaction = connection.transaction().map_err(sql_error)?;
     transaction.execute_batch(r#"
-        INSERT INTO projects VALUES ('p1', 'C:\\阶段 0 项目 & 空格', 'fixture:p1', '阶段 0 项目', NULL, 1000, 1000);
+        INSERT INTO projects(id,canonical_path,path_key,name,display_name,created_at,updated_at) VALUES ('p1', 'C:\\阶段 0 项目 & 空格', 'fixture:p1', '阶段 0 项目', NULL, 1000, 1000);
         INSERT INTO project_usage VALUES ('p1', 1000, 1, 'codex');
         INSERT INTO provider_profiles (id, name, source_kind, adapter_kind, external_profile_id,
           endpoint, endpoint_origin, wire_api, auth_kind, credential_ref, credential_revision,

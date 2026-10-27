@@ -1,6 +1,9 @@
 fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "projects_add_from_picker",
+            "project_get",
+            "project_remove",
             "desktop_initialize",
             "app_get_status",
             "settings_get",

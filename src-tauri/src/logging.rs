@@ -86,6 +86,9 @@ fn now_ms() -> Result<u64> {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Command {
+    ProjectsAddFromPicker,
+    ProjectGet,
+    ProjectRemove,
     DesktopInitialize,
     AppGetStatus,
     SettingsGet,
@@ -114,6 +117,9 @@ enum Command {
 impl Command {
     fn parse(value: &str) -> Option<Self> {
         Some(match value {
+            "projects_add_from_picker" => Self::ProjectsAddFromPicker,
+            "project_get" => Self::ProjectGet,
+            "project_remove" => Self::ProjectRemove,
             "desktop_initialize" => Self::DesktopInitialize,
             "app_get_status" => Self::AppGetStatus,
             "settings_get" => Self::SettingsGet,

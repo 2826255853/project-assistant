@@ -11,9 +11,11 @@ import { isLogStatus } from "./logging";
 import { isCredentialMutation } from "./credentials";
 import { isProviderList, isProviderProfile, isModels, isReceipt, isOperation, isRemoved, isAccepted } from "./providers";
 import { errorForCode } from "./errors";
+import { isProjectView, isProjectPickerResult, isRemovedProject } from "./projects";
 
 type Name = keyof ImplementedCommandMap;
 const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMap[K]["data"] } = {
+  projects_add_from_picker: isProjectPickerResult, project_get: isProjectView, project_remove: isRemovedProject,
   providers_list: isProviderList, provider_save: isProviderProfile, provider_set_enabled: isProviderProfile,
   provider_delete: isRemoved, provider_models: isModels, provider_test: isReceipt, provider_switch: isReceipt,
   operation_get: isOperation, operation_cancel: isAccepted,
@@ -25,7 +27,7 @@ const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMa
   credential_put: isCredentialMutation, credential_remove: isCredentialMutation,
 };
 export async function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]> {
-  if ((command === "logs_get_status" || command === "logs_clear" || command === "credential_put" || command === "credential_remove" || command.startsWith("provider") || command.startsWith("operation_")) && !isMainWindow()) throw errorForCode("PA_IPC_PERMISSION_DENIED");
+  if ((command === "logs_get_status" || command === "logs_clear" || command === "credential_put" || command === "credential_remove" || command.startsWith("project") || command.startsWith("provider") || command.startsWith("operation_")) && !isMainWindow()) throw errorForCode("PA_IPC_PERMISSION_DENIED");
   const wire = await awaitTransport(() => invoke<unknown>(command, { request: { apiVersion: API_VERSION, params } }), options);
   const result = unwrap(parseResponse(wire, validators[command]));
   // Nested errors inside successful operation envelopes obey the same local

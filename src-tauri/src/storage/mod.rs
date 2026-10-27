@@ -9,6 +9,8 @@ use std::{
 };
 
 pub mod probe;
+#[cfg(windows)]
+pub mod projects;
 mod repositories;
 mod settings;
 pub use repositories::{
@@ -17,7 +19,7 @@ pub use repositories::{
 };
 
 pub const DATABASE_NAME: &str = "project-assistant.sqlite3";
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 struct Migration {
     version: i64,
@@ -46,6 +48,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "providers",
         sql: include_str!("../../migrations/0004_providers.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "projects",
+        sql: include_str!("../../migrations/0005_projects.sql"),
     },
 ];
 
@@ -188,6 +195,11 @@ impl Storage {
 
     pub fn settings(&mut self) -> SettingsRepository<'_> {
         SettingsRepository::new(&mut self.connection)
+    }
+
+    #[cfg(windows)]
+    pub fn projects(&mut self) -> projects::ProjectRepository<'_> {
+        projects::ProjectRepository::new(&mut self.connection)
     }
 
     pub fn profiles(&mut self) -> ProfileRepository<'_> {
@@ -469,6 +481,14 @@ impl StorageState {
                 .audit()
                 .prune_expired(repositories::audit_now_ms()?)?;
             let recovery = storage.recover_on_startup(correlation_id)?;
+            #[cfg(windows)]
+            storage.projects().recover(correlation_id).map_err(|code| {
+                error(if code == crate::ipc::ErrorCode::AuditWriteFailed {
+                    "STORAGE_AUDIT_WRITE_FAILED"
+                } else {
+                    "STORAGE_SQL_FAILED"
+                })
+            })?;
             Ok((storage, recovery))
         }) {
             Ok((storage, recovery)) => {

@@ -6,11 +6,112 @@ mod logging;
 mod overlay;
 mod owned_process;
 pub mod project_contract;
+pub mod project_paths;
+mod projects;
 mod providers;
 pub mod safety;
 mod settings;
 pub mod storage;
 use tauri::Manager;
+
+fn project_request<T: serde::de::DeserializeOwned>(
+    window: &tauri::WebviewWindow,
+    request: serde_json::Value,
+) -> Result<T, ipc::ErrorCode> {
+    ipc::authorize(window, true)?;
+    if serde_json::to_vec(&request)
+        .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+        .len()
+        > 8192
+    {
+        return Err(ipc::ErrorCode::InputTooLarge);
+    }
+    ipc::parse_request(request)
+}
+
+#[tauri::command]
+async fn projects_add_from_picker(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<projects::PickerResult> {
+    let id = ipc::correlation_id();
+    let result = match project_request::<ipc::EmptyParams>(&window, request) {
+        Ok(_) => {
+            #[cfg(windows)]
+            let owner = window
+                .hwnd()
+                .map(|h| h.0 as isize)
+                .map_err(|_| ipc::ErrorCode::ProjectPickerFailed);
+            #[cfg(not(windows))]
+            let owner: Result<isize, ipc::ErrorCode> = Err(ipc::ErrorCode::ProjectPickerFailed);
+            match owner {
+                Ok(owner) => {
+                    let a = app.clone();
+                    let i = id.clone();
+                    tauri::async_runtime::spawn_blocking(move || projects::add(&a, owner, &i))
+                        .await
+                        .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "projects_add_from_picker", id, result)
+}
+
+#[tauri::command]
+async fn project_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<project_contract::ProjectView> {
+    let id = ipc::correlation_id();
+    let parsed =
+        project_request::<project_contract::ProjectIdRequest>(&window, request).and_then(|p| {
+            p.validate()?;
+            Ok(p)
+        });
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || projects::get(&a, &p.project_id, &i))
+                .await
+                .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "project_get", id, result)
+}
+
+#[tauri::command]
+async fn project_remove(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<project_contract::RemoveResult> {
+    let id = ipc::correlation_id();
+    let parsed =
+        project_request::<project_contract::RemoveRequest>(&window, request).and_then(|p| {
+            p.validate()?;
+            Ok(p)
+        });
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                projects::remove(&a, &p.project_id, p.expected_revision, &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "project_remove", id, result)
+}
 
 #[tauri::command]
 async fn providers_list(
@@ -531,6 +632,8 @@ async fn ipc_fixture(
         }
         let params: Params = ipc::parse_request(request)?;
         match params.action.as_str() {
+            #[cfg(windows)]
+            action if action.starts_with("project_") => projects::fixture(&app, action),
             action if action.starts_with("credential_") => {
                 credentials::verification_fixture(&app, action)
             }
@@ -770,6 +873,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            projects_add_from_picker,
+            project_get,
+            project_remove,
             desktop_initialize,
             app_get_status,
             settings_get,

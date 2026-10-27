@@ -20,6 +20,7 @@
     "verify:git": "node scripts/verify-git.mjs",
     "verify:system-open": "node scripts/verify-system-open.mjs",
     "verify:storage": "node scripts/verify-storage.mjs",
+    "verify:projects": "node scripts/verify-projects.mjs",
     "test:ipc": "node --test scripts/ipc/*.test.mjs",
     "verify:ipc": "node scripts/verify-ipc.mjs",
     "verify:codex": "node scripts/verify-codex.mjs",

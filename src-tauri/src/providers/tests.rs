@@ -282,7 +282,7 @@ impl Drop for Fixture {
 fn occupy(f: &Fixture, s: &Selection) {
     f.run(s, "test", Cancel::default());
     f.db(|c|{let tx=c.transaction().map_err(sql)?;let snapshot=snapshots::capture_in_transaction(&tx,Some(s),None)?;let at=now()?;
- tx.execute("INSERT OR IGNORE INTO projects VALUES('synthetic-project','C:/synthetic','synthetic','Synthetic',NULL,?1,?1)",[at]).map_err(sql)?;
+ tx.execute("INSERT OR IGNORE INTO projects(id,canonical_path,path_key,name,display_name,created_at,updated_at) VALUES('synthetic-project','C:/synthetic','synthetic','Synthetic',NULL,?1,?1)",[at]).map_err(sql)?;
  tx.execute("INSERT OR IGNORE INTO sessions VALUES('synthetic-session','synthetic-project',NULL,NULL,'active',?1,?1)",[at]).map_err(sql)?;
  tx.execute("INSERT INTO tasks(id,session_id,snapshot_id,status,created_at,started_at) VALUES('synthetic-task','synthetic-session',?1,'running',?2,?2)",params![snapshot.id,at]).map_err(sql)?;tx.commit().map_err(sql)
  }).unwrap();
@@ -330,7 +330,7 @@ fn selection_resolution_uses_complete_groups_without_fallback() {
     let a = f.seed("A");
     let b = f.seed("B");
     f.run(&a, "switch", Cancel::default());
-    f.db(|c|{let at=now()?;c.execute("INSERT INTO projects VALUES('project','C:/synthetic','synthetic','Synthetic',NULL,?1,?1)",[at]).map_err(sql)?;c.execute("INSERT INTO settings(id,scope,project_id,key,profile_id,model_id,effort,revision,updated_at) VALUES('project-ai','project','project','ai_defaults',?1,?2,NULL,1,?3)",params![b.profile_id,b.model_id,at]).map_err(sql)?;c.execute("INSERT INTO ai_default_revisions VALUES('project-ai',2)",[]).map_err(sql)?;let p=snapshots::resolve(c,None,Some("project"))?;assert_eq!(p.profile_id,b.profile_id);assert_eq!(p.effort,None);assert_eq!(snapshots::resolve(c,Some(&a),Some("project"))?,a);c.execute("UPDATE ai_default_revisions SET profile_revision=99 WHERE setting_id='project-ai'",[]).map_err(sql)?;let stale=snapshots::resolve(c,None,Some("project"))?;assert_eq!(repo::validate_selection(c,&stale,at).err(),Some(ErrorCode::RevisionConflict));Ok(())}).unwrap();
+    f.db(|c|{let at=now()?;c.execute("INSERT INTO projects(id,canonical_path,path_key,name,display_name,created_at,updated_at) VALUES('project','C:/synthetic','synthetic','Synthetic',NULL,?1,?1)",[at]).map_err(sql)?;c.execute("INSERT INTO settings(id,scope,project_id,key,profile_id,model_id,effort,revision,updated_at) VALUES('project-ai','project','project','ai_defaults',?1,?2,NULL,1,?3)",params![b.profile_id,b.model_id,at]).map_err(sql)?;c.execute("INSERT INTO ai_default_revisions VALUES('project-ai',2)",[]).map_err(sql)?;let p=snapshots::resolve(c,None,Some("project"))?;assert_eq!(p.profile_id,b.profile_id);assert_eq!(p.effort,None);assert_eq!(snapshots::resolve(c,Some(&a),Some("project"))?,a);c.execute("UPDATE ai_default_revisions SET profile_revision=99 WHERE setting_id='project-ai'",[]).map_err(sql)?;let stale=snapshots::resolve(c,None,Some("project"))?;assert_eq!(repo::validate_selection(c,&stale,at).err(),Some(ErrorCode::RevisionConflict));Ok(())}).unwrap();
 }
 #[test]
 fn restart_removes_snapshot_admission_evidence_without_network() {

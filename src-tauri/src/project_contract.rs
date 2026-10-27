@@ -1,6 +1,5 @@
-//! Phase 2 project DTOs only. These types are deliberately not wired to
-//! `#[tauri::command]`, invoke_handler, generated command permissions, or any
-//! filesystem operation until the corresponding implementation step is ready.
+//! Phase 2 project DTOs. S2-03 wires register/get/remove only; other types remain
+//! future contracts until their implementation step is ready.
 use serde::{Deserialize, Serialize};
 
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;

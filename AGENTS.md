@@ -11,9 +11,9 @@
 - 1.1/1.4 的实际托盘鼠标操作、物理显示器拔插和实时 DPI 变化仍需人工复核，复审点为 1.10；注入测试不能替代硬件验收。
 - 步骤 1.6（S1-05）系统凭据库已通过本机合成凭据验收（2026-10-19），2026-10-20 已在固定基线 Node/npm 24.18.0/11.16.0、Rust 1.99.0 下完成收尾复验：7 个独立进程读写/替换/删除/清理、真实 OS 与 SQLite 提交故障补偿、dev/built 桌面及存储回归。服务/权限失败为适配层注入。1.7、1.8 已随后完成，1.9 AI 配置页已实现；2026-10-23 已补通过 `verify:providers`，包括 104 项 Rust 单测、实际 CLI/双合成 HTTPS、隔离回归和 built/dev provider/credential 桌面场景。页面控件仍待人工点验，后续为 1.10 阶段回归。
 - 步骤 1.7（S1-06）已实现正式 Rust 自有 stdio 候选适配器和配置层实际路由隔离，见 `docs/phase-1/step-1.7.md`；每候选独立固定上游转发层仅在 Rust 内存中使用站点 Key，子进程只持临时入口凭据。正常启动只初始化/清理自有资源，不启动 Codex。项目管理、AI 配置和真实任务入口尚未开放；1.8 profile/能力/切换恢复已完成配置层验收；阶段 3 网关仍待实现。不能宣布 M1 或阶段 1 整体完成。
-- 阶段 2 步骤 2.1（S2-01）于 2026-10-25 完成契约定义：项目 DTO、拟议接口、main/overlay 权限、路径授权语义、固定错误、审计/日志边界和路径安全用例见 `docs/phase-2/step-2.1.md`。当前仅有 Rust/TypeScript 契约类型、无副作用响应验证器和错误目录；无项目业务命令、生产路径授权或可调用范围扩大。2.2–2.9 仍待开始，M2 未通过。
+- 阶段 2 步骤 2.1（S2-01）于 2026-10-25 完成契约定义；步骤 2.2（S2-02）于 2026-10-26 实现 Windows 原生目录选择、NTFS/ReFS 本地路径约束、逐级重解析点拒绝、短期身份句柄、卷序列号/文件 ID 身份绑定、大小写去重键和替换复核，合成文件系统测试通过，记录见 `docs/phase-2/step-2.2.md`。2.3 已于 2026-10-27 通过仓储/恢复范围：schema v5、登记/详情/撤权 main-only 命令、授权/审计与使用事务、启动复核；`verify:projects` 通过 136 Rust、29 IPC、15 离线、46 存储及 built/dev 项目桌面，详见 `docs/phase-2/step-2.3.md`。列表搜索、系统打开、Git、活动项目及原生选择器人工点验仍待 2.4–2.9；M2 未通过。
 
-优先阅读 `README.md`、`计划文档.txt` 第 21/22 节、`docs/phase-2/step-2.1.md`、`docs/phase-1/step-1.7.md` 和 `step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
+优先阅读 `README.md`、`计划文档.txt` 第 21/22 节、`docs/phase-2/step-2.3.md`、`docs/phase-2/step-2.1.md`、`docs/phase-1/step-1.7.md` 和 `step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
 
 ## 已确认的产品约定
 
@@ -30,7 +30,7 @@
 - `src/app/Bootstrap.tsx`：桌面初始化、失败重试、渲染边界和显式阶段 0 页；`src/App.tsx`：导航、工作台、诊断和占位页面。
 - `src/pages/SettingsPage.tsx`：正式全局设置表单；`OverlayPage.tsx`：悬浮球/展开面板，草稿仅在本次进程内保留，发送按钮不可用。
 - `src/ipc/contracts.ts`：DTO；`client.ts`：集中调用入口；`response.ts`、`settings.ts`、`state.ts`：运行时返回校验和状态恢复；`transport.ts`：超时/停止等待。`CommandMap` 含未来接口，**实际可调用范围看 `ImplementedCommandMap` 和 Rust 注册表**。
-- `src/ipc/projects.ts`、`src-tauri/src/project_contract.rs`：步骤 2.1 项目 DTO 草案与校验参考；未接入 IPC client、命令注册、capability 或服务状态。
+- `src/ipc/projects.ts`、`src-tauri/src/project_contract.rs`：项目 DTO 与校验；2.3 仅登记/详情/移除接入 client、Rust 注册和 main capability，完整项目服务状态仍待后续。`src-tauri/src/project_paths.rs` 与 `project_paths/windows.rs`：2.2 Windows 选择器、路径核验与身份句柄；`storage/projects.rs` 为 2.3 持久仓储/使用事务及启动复核，`projects.rs` 为服务入口，实际系统打开仍须按 2.5 单独验证竞态。
 - `src-tauri/src/lib.rs`：命令封装、启动顺序、状态注入、窗口生命周期和命令注册；`desktop.rs`：初始化模式；`app_state.rs`：权威状态与事件游标。
 - `src-tauri/src/settings.rs`：设置 DTO、校验、运行状态应用/回滚和统一更新；`overlay.rs`：托盘、快捷键、位置、显示器校正与窗口操作。
 - `src-tauri/src/storage/mod.rs`：连接保护、迁移/备份、启动恢复及 StorageState；`repositories.rs`：类型化仓储；`storage/settings.rs`：设置事务、修订与旧 JSON 一次迁移。
@@ -46,7 +46,7 @@
 - 事件频道 `project-assistant://event/v1`，以 streamId/sequence 跟踪无载荷状态失效通知；先监听后查询，缺口/重建后查询权威快照。超时/停止等待不代表服务端取消，变更请求不得自动重发。
 - 设置 `expectedRevision` 是整个全局批次的修订号。非法值、冲突、SQL 或快捷键失败拒绝整批并保持/恢复旧状态；冲突必须重读后由用户重新提交。当前项目范围不授权，非空 AI 默认仅由 provider_switch 验证提交，settings_update 只允许显式清空，审批策略只接受 ask。
 - 常驻入口首次默认启用，快捷键 Ctrl+Alt+Space；主窗口 X 在常驻启用时隐藏，停用时退出；明确“退出应用”始终退出。停用状态重启保持停用，启用后重启显示收起悬浮球。
-- 数据库位于 Tauri `app_data_dir` 下的 `project-assistant.sqlite3`，当前 schema v4（1.6 追加凭据状态/审计，1.8 追加默认修订、操作和受限状态）。**已有迁移 SQL 与校验和不可改写，只追加新版本**。升级先做 SQLite 一致性备份；损坏/高版本/迁移失败保留原库，不删除重建、不自动降级、不重放任务/审批。
+- 数据库位于 Tauri `app_data_dir` 下的 `project-assistant.sqlite3`，当前 schema v5（1.6 追加凭据状态/审计，1.8 追加默认修订/操作/受限状态，2.3 追加项目授权身份/修订/失效/移除与审计类型）。**已有迁移 SQL 与校验和不可改写，只追加新版本**。升级先做 SQLite 一致性备份；损坏/高版本/迁移失败保留原库，不删除重建、不自动降级、不重放任务/审批。
 - 产品持久日志与设置审计已在 1.5 接入。其规范见 `docs/phase-0/errors-and-logging.md`：JSONL 白名单、单行 4 KiB、单文件 5 MiB、最多 5 文件/7 天/25 MiB；审计默认 90 天，配置变更与审计同事务，高风险审计失败拒绝执行。清理核验应用目录身份并拒绝联接/符号链接越界；审批决定/消费的完整原子性仍待阶段 3。
 - 开发与验收只声明实际验证范围。历史报告、合成测试、当前实现与人工待验应分别说明；不要把阶段 0 实验通过写成生产能力通过。
 
@@ -68,6 +68,7 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 npm run verify:settings
 npm run verify:state
 npm run verify:storage
+npm run verify:projects
 npm run verify:credentials
 npm run verify:isolation
 npm run verify:providers

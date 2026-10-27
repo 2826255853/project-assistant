@@ -68,7 +68,7 @@ test("fixed project errors are local catalog entries", () => {
   for (const code of projectErrorCodes) assert.equal(errorForCode(code).code, code);
 });
 
-test("project DTO helpers only name future commands", async () => {
+test("project DTO command catalog includes current and future commands", async () => {
   assert.deepEqual(projectCommands, [
     "projects_add_from_picker", "projects_list", "project_get", "project_select", "project_remove",
     "project_open_directory", "project_pick_file", "project_open_file", "project_git_summary",

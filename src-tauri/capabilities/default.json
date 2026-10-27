@@ -4,6 +4,9 @@
   "description": "Capability for the main window",
   "windows": ["main"],
   "permissions": [
+    "allow-projects-add-from-picker",
+    "allow-project-get",
+    "allow-project-remove",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-get-all-windows",

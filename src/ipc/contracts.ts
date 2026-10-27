@@ -111,6 +111,9 @@ export type OverlayAction =
   | { action: "set_shortcut"; shortcut: string }
   | { action: "draft"; draft: string };
 export interface ImplementedCommandMap {
+  projects_add_from_picker: CommandMap["projects_add_from_picker"];
+  project_get: CommandMap["project_get"];
+  project_remove: CommandMap["project_remove"];
   providers_list: CommandMap["providers_list"];
   provider_save: CommandMap["provider_save"];
   provider_set_enabled: CommandMap["provider_set_enabled"];
@@ -134,8 +137,8 @@ export interface ImplementedCommandMap {
   credential_remove: { params: { profileId: string; expectedRevision: number }; data: { credential: CredentialState; configRevision: number } };
 }
 type Assert<T extends true> = T;
-export type ProjectCommandsRemainUnimplemented = Assert<
-  Extract<keyof ImplementedCommandMap, `project${string}` | `projects${string}`> extends never ? true : false
+export type FutureProjectCommandsRemainUnimplemented = Assert<
+  Extract<keyof ImplementedCommandMap, "projects_list" | "project_select" | "project_open_directory" | "project_open_file" | "project_pick_file" | "project_git_summary"> extends never ? true : false
 >;
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.

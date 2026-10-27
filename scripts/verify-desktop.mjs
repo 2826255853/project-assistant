@@ -13,13 +13,14 @@ import { verifySettingsDesktop } from "./ipc/settings-desktop.mjs";
 import { verifyLoggingDesktop } from "./ipc/logging-desktop.mjs";
 import { verifyCredentialsDesktop } from "./ipc/credentials-desktop.mjs";
 import { verifyProvidersDesktop } from "./ipc/providers-desktop.mjs";
+import { verifyProjectsDesktop } from "./ipc/projects-desktop.mjs";
 
 assert.equal(process.platform, "win32", "This test requires Windows and WebView2.");
 assert.ok(process.env.npm_execpath, "Run this script with npm run verify:desktop.");
 const mode = process.argv[2] ?? "dev";
 assert.ok(["dev", "built"].includes(mode), "Expected dev or built.");
 const scenario = process.argv[3] ?? "phase0";
-assert.ok(["phase0", "shell", "shell-error", "ipc", "settings-write", "settings-read", "settings-enabled", "logging", "credentials", "providers"].includes(scenario));
+assert.ok(["phase0", "shell", "shell-error", "ipc", "settings-write", "settings-read", "settings-enabled", "logging", "credentials", "providers", "projects"].includes(scenario));
 const shell = scenario !== "phase0";
 const settingsScenario = scenario.startsWith("settings-");
 const root = resolve(import.meta.dirname, "..");
@@ -36,14 +37,14 @@ const sharedFixtureDirectory = settingsScenario ? process.env.PA_SETTINGS_VERIFY
 assert.ok(!settingsScenario || sharedFixtureDirectory, "Settings scenarios require an isolated shared fixture directory");
 const overlayFixtureDirectory = sharedFixtureDirectory || (shell ? await mkdtemp(resolve(tmpdir(), "project-assistant-ipc-")) : "");
 const remote = createHttpServer((_, response) => { response.end('<!doctype html><title>IPC remote fixture</title><p>Local verification fixture</p>'); });
-if (["ipc", "credentials", "providers"].includes(scenario)) await new Promise(done => remote.listen(0, "127.0.0.1", done));
+if (["ipc", "credentials", "providers", "projects"].includes(scenario)) await new Promise(done => remote.listen(0, "127.0.0.1", done));
 const env = {
   ...process.env,
   PA_DESKTOP_MODE: shell ? "normal" : "phase0",
   PA_SHELL_FAIL_ONCE: scenario === "shell-error" ? "1" : "0",
   PA_IPC_VERIFY: shell ? "1" : "0",
   PA_OVERLAY_VERIFY_DIR: overlayFixtureDirectory,
-  PA_IPC_REMOTE_URL: ["ipc", "credentials", "providers"].includes(scenario) ? `http://127.0.0.1:${remote.address().port}/` : "",
+  PA_IPC_REMOTE_URL: ["ipc", "credentials", "providers", "projects"].includes(scenario) ? `http://127.0.0.1:${remote.address().port}/` : "",
   CARGO_TERM_COLOR: "never",
   CARGO_TERM_PROGRESS_WHEN: "never",
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1`,
@@ -114,7 +115,7 @@ try {
     return result.result.value;
   }
   let wire;
-  if (shell && !settingsScenario && !["logging", "credentials", "providers"].includes(scenario)) {
+  if (shell && !settingsScenario && !["logging", "credentials", "providers", "projects"].includes(scenario)) {
     if (scenario === "shell-error") {
       const error = await until(() => evaluate("document.querySelector('[data-testid=startup-error]')?.textContent"), Boolean);
       assert.match(error, /PA_DESKTOP_INITIALIZATION_FAILED/);
@@ -233,6 +234,8 @@ try {
       });
     }
     if (scenario === "shell-error") await evaluate("window.__TAURI_INTERNALS__.invoke('overlay_control', { request: { apiVersion: 1, params: { action: 'disable' } } })");
+  } else if (scenario === "projects") {
+    await verifyProjectsDesktop({evaluate,until,report,debugPort,receive,cdp,mainUrl:target.url,fixtureDirectory:overlayFixtureDirectory});
   } else if (scenario === "providers") {
     await verifyProvidersDesktop({evaluate,until,report,debugPort,receive,cdp,mainUrl:target.url});
   } else if (scenario === "credentials") {
@@ -290,7 +293,7 @@ try {
   // Match the exact executable path, then send normal WM_CLOSE via CloseMainWindow.
   const exe = resolve(root, "src-tauri", "target", "debug", "project-assistant.exe");
   const psPath = `'${exe.replaceAll("'", "''")}'`;
-  const useExitButton = shell && (["shell", "ipc", "logging", "credentials", "providers"].includes(scenario) || settingsScenario);
+  const useExitButton = shell && (["shell", "ipc", "logging", "credentials", "providers", "projects"].includes(scenario) || settingsScenario);
   if (useExitButton) await evaluate("document.querySelector('.exit-button').click()");
   const close = spawnSync("powershell.exe", ["-NoProfile", "-Command", `
     $p = @(Get-Process -Name 'project-assistant' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ${psPath} });
@@ -318,6 +321,7 @@ try {
     assert.ok(processOutput.includes("PA_DESKTOP_INITIALIZATION_FAILED"));
   }
   if (scenario === "credentials") assert.ok(!processOutput.includes("synthetic-credential-desktop-DO-NOT-EXPORT"), "Credential must not enter process output");
+  if (scenario === "projects") for (const sentinel of ["synthetic-project-private-path","synthetic-private-input"]) assert.ok(!processOutput.includes(sentinel));
   report.passed = true;
   console.log(report.results.join("\n"));
 } catch (error) {
