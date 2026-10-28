@@ -79,7 +79,7 @@ interface ProjectSettingsView {
 
 ## 拟议 IPC 与权限矩阵
 
-下表中命令均为未来能力名，不是当前可调用接口。所有请求继续使用严格 v1 envelope、拒绝未知字段，并由 Rust 检查真实窗口 label 和 URL。项目管理、路径选择、设置读取及系统打开能力仅授予本地 `main`。`overlay` 不获项目列表、登记、选择、移除、设置读取、Git、目录/文件打开或文件系统插件权限；后续仅可从 `app_get_status` 读取最小 `activeProject`。远端、未知窗口和伪造来源均在任何副作用前拒绝。
+下表记录项目接口契约；对应服务随步骤逐一接入，`project_git_summary` 已在 2.6 实现。所有请求继续使用严格 v1 envelope、拒绝未知字段，并由 Rust 检查真实窗口 label 和 URL。项目管理、路径选择、设置读取及系统打开能力仅授予本地 `main`。`overlay` 不获项目列表、登记、选择、移除、设置读取、Git、目录/文件打开或文件系统插件权限；后续仅可从 `app_get_status` 读取最小 `activeProject`。远端、未知窗口和伪造来源均在任何副作用前拒绝。
 
 | 拟议命令/入口 | 输入与返回（`data`） | 授权与副作用 | 主要失败 |
 | --- | --- | --- | --- |
@@ -91,7 +91,7 @@ interface ProjectSettingsView {
 | `project_open_directory` | `{ projectId: string }` → `{ systemAccepted: true }` | main only。Rust 从已授权记录解析目录并在交付前重新核验；成功后更新使用记录。前端不能提供路径、URL、Shell 字符串或程序参数。 | `PA_PROJECT_NOT_FOUND`、`PA_PROJECT_PATH_UNAVAILABLE`、`PA_PROJECT_PATH_CHANGED`、`PA_PROJECT_ACCESS_DENIED`、`PA_PROJECT_OPEN_REJECTED`、`PA_PROJECT_OPEN_TIMEOUT`。不自动重试。 |
 | `project_pick_file`（可选） | `{ projectId: string }` → `{ relativePath: string } \| { outcome: "cancelled" }` | main only。选择器限定在已授权目录；返回值必须是经服务端验证的相对路径。取消无副作用。 | 路径授权/身份错误、`PA_PROJECT_PICKER_FAILED`；取消不是错误。 |
 | `project_open_file` | `{ projectId: string, relativePath: string }` → `{ systemAccepted: true }` | main only。Rust 拒绝绝对路径并按组件边界解析相对路径；复核后交付默认程序或已验证编辑器。编辑器使用结构化参数数组，不经 Shell。成功后更新使用记录。 | `PA_PROJECT_NOT_FOUND`、`PA_PROJECT_PATH_UNAVAILABLE`、`PA_PROJECT_PATH_CHANGED`、`PA_PROJECT_FILE_OUTSIDE_PROJECT`、`PA_PROJECT_FILE_MISSING`、`PA_PROJECT_ACCESS_DENIED`、`PA_PROJECT_OPEN_REJECTED`、`PA_PROJECT_OPEN_TIMEOUT`。不自动重试。 |
-| `project_git_summary` | `{ projectId: string, refresh?: boolean }` → `GitSummary` | main only。授权工作目录内只读查询；有界时间/输出，使用固定参数与受控环境，不执行项目脚本、别名或外部 helper。 | 非仓库、Git 缺失、超时和异常作为 `GitSummary.state` 降级返回；仅 IPC、路径、存储错误使用 error envelope。 |
+| `project_git_summary` | `{ projectId: string, refresh?: boolean }` → `GitSummary` | main only。授权工作目录内只读查询；有界时间/输出，使用固定参数与受控环境，不执行项目脚本、别名或外部 helper。已于 2.6 实现。 | 非仓库、Git 缺失、超时和异常作为 `GitSummary.state` 降级返回；仅 IPC、路径、存储错误使用 error envelope。 |
 | `settings_get`（扩展 project scope） | `{ scope: "project", projectId: string }` → `ProjectSettingsView` | main only。要求项目已登记、授权有效且路径身份复核通过；返回项目值和全局继承来源。仅读取。`settings_update` 的 project scope 仍拒绝。 | `PA_PROJECT_NOT_FOUND`、`PA_PROJECT_PATH_UNAVAILABLE`、`PA_PROJECT_PATH_CHANGED`、`PA_IPC_PERMISSION_DENIED`、设置/存储错误。 |
 | `app_get_status`（步骤 2.8 扩展） | `{}` → 现有 `AppStatus` 加 `activeProject: ActiveProject \| null` | main 可读完整状态；overlay 只获最小项目 ID/目录名用于上下文提示，不含绝对路径、搜索结果、Git 摘要或草稿。 | 沿用现有固定 IPC/状态错误；路径失效或项目移除时服务端清空活动项目并发布失效事件。 |
 

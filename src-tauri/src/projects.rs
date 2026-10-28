@@ -8,6 +8,36 @@ use tauri::Manager;
 
 pub use crate::project_contract::{FilePickerResult, OpenResult};
 
+pub fn git_summary(
+    app: &tauri::AppHandle,
+    id: &str,
+    refresh: bool,
+    correlation: &str,
+) -> Result<crate::project_contract::GitSummary, ErrorCode> {
+    #[cfg(windows)]
+    {
+        // Obtain the short-lived authorized directory used as Git's cwd.
+        // Persist invalidation when identity/access checks fail. Git reads never
+        // create a project usage record.
+        let prepared = with_repository(app, |storage| storage.projects().authorized(id));
+        let (revision, verified) = match prepared {
+            Ok(prepared) => prepared,
+            Err(code) => {
+                get(app, id, correlation)?;
+                return Err(code);
+            }
+        };
+        let summary = crate::project_git::summary(id, revision, &verified.canonical_path, refresh);
+        summary.validate_wire()?;
+        Ok(summary)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, id, refresh, correlation);
+        Err(ErrorCode::ProjectPathUnavailable)
+    }
+}
+
 pub fn open(
     app: &tauri::AppHandle,
     id: &str,
@@ -222,6 +252,51 @@ pub(crate) fn fixture(app: &tauri::AppHandle, action: &str) -> Result<(), ErrorC
                 std::fs::create_dir_all(&source).map_err(|_| ErrorCode::ProjectPathUnavailable)?;
                 std::fs::write(source.join("keep.txt"), "source-sentinel")
                     .map_err(|_| ErrorCode::ProjectPathUnavailable)?;
+                let git =
+                    crate::project_git::discover_git().ok_or(ErrorCode::ProjectPathUnavailable)?;
+                let initialized = std::process::Command::new(&git)
+                    .args(["init", "-b", "s2-06-fixture"])
+                    .current_dir(&source)
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_GLOBAL", "NUL")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .ok()
+                    .is_some_and(|status| status.success());
+                if initialized {
+                    let staged = std::process::Command::new(&git)
+                        .args(["add", "--", "keep.txt"])
+                        .current_dir(&source)
+                        .env("GIT_CONFIG_NOSYSTEM", "1")
+                        .env("GIT_CONFIG_GLOBAL", "NUL")
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .ok()
+                        .is_some_and(|status| status.success());
+                    if staged {
+                        let _ = std::process::Command::new(&git)
+                            .args([
+                                "-c",
+                                "user.name=Project Assistant Fixture",
+                                "-c",
+                                "user.email=fixture@example.invalid",
+                                "commit",
+                                "-m",
+                                "synthetic fixture",
+                            ])
+                            .current_dir(&source)
+                            .env("GIT_CONFIG_NOSYSTEM", "1")
+                            .env("GIT_CONFIG_GLOBAL", "NUL")
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    }
+                }
                 let candidate = crate::project_paths::authorize_fixture(&source)?;
                 let view = storage
                     .projects()
@@ -232,6 +307,10 @@ pub(crate) fn fixture(app: &tauri::AppHandle, action: &str) -> Result<(), ErrorC
             }
             "project_missing" => {
                 std::fs::rename(&source, directory.join("moved-project"))
+                    .map_err(|_| ErrorCode::ProjectPathUnavailable)?;
+            }
+            "project_git_dirty" => {
+                std::fs::write(source.join("git-dirty-fixture.txt"), "synthetic git change")
                     .map_err(|_| ErrorCode::ProjectPathUnavailable)?;
             }
             _ => return Err(ErrorCode::InvalidRequest),

@@ -11,7 +11,7 @@ import { isLogStatus } from "./logging";
 import { isCredentialMutation } from "./credentials";
 import { isProviderList, isProviderProfile, isModels, isReceipt, isOperation, isRemoved, isAccepted } from "./providers";
 import { errorForCode } from "./errors";
-import { isProjectView, isProjectPickerResult, isRemovedProject, isProjectListPage, isProjectOpenAccepted, isProjectFilePickerResult } from "./projects";
+import { isProjectView, isProjectPickerResult, isRemovedProject, isProjectListPage, isProjectOpenAccepted, isProjectFilePickerResult, isGitSummary } from "./projects";
 import { ProjectSearchController } from "./projectSearch";
 import type { ProjectSearchState } from "./projectSearch";
 
@@ -19,6 +19,7 @@ type Name = keyof ImplementedCommandMap;
 const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMap[K]["data"] } = {
   projects_add_from_picker: isProjectPickerResult, project_get: isProjectView, project_remove: isRemovedProject,
   projects_list: isProjectListPage,
+  project_git_summary: isGitSummary,
   project_open_directory: isProjectOpenAccepted, project_open_file: isProjectOpenAccepted,
   project_pick_file: isProjectFilePickerResult,
   providers_list: isProviderList, provider_save: isProviderProfile, provider_set_enabled: isProviderProfile,
@@ -33,7 +34,7 @@ const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMa
 };
 export async function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]> {
   if ((command === "logs_get_status" || command === "logs_clear" || command === "credential_put" || command === "credential_remove" || command.startsWith("project") || command.startsWith("provider") || command.startsWith("operation_")) && !isMainWindow()) throw errorForCode("PA_IPC_PERMISSION_DENIED");
-  const timeoutMs = command === "project_pick_file" ? 120000 : command === "project_open_directory" || command === "project_open_file" ? 12000 : undefined;
+  const timeoutMs = command === "project_pick_file" ? 120000 : command === "project_open_directory" || command === "project_open_file" ? 12000 : command === "project_git_summary" ? 8000 : undefined;
   const wire = await awaitTransport(() => invoke<unknown>(command, { request: { apiVersion: API_VERSION, params } }), { timeoutMs, ...options });
   const result = unwrap(parseResponse(wire, validators[command]));
   // Nested errors inside successful operation envelopes obey the same local

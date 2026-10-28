@@ -113,6 +113,7 @@ export type OverlayAction =
 export interface ImplementedCommandMap {
   projects_add_from_picker: CommandMap["projects_add_from_picker"];
   project_get: CommandMap["project_get"];
+  project_git_summary: CommandMap["project_git_summary"];
   projects_list: CommandMap["projects_list"];
   project_open_directory: CommandMap["project_open_directory"];
   project_open_file: CommandMap["project_open_file"];
@@ -142,7 +143,7 @@ export interface ImplementedCommandMap {
 }
 type Assert<T extends true> = T;
 export type FutureProjectCommandsRemainUnimplemented = Assert<
-  Extract<keyof ImplementedCommandMap, "project_select" | "project_git_summary"> extends never ? true : false
+  Extract<keyof ImplementedCommandMap, "project_select"> extends never ? true : false
 >;
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.

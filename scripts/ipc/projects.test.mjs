@@ -49,8 +49,12 @@ test("project operation responses and inputs are strict and path-bounded", () =>
 
 test("Git degradation and project settings are typed data without raw output", () => {
   assert.equal(isGitSummary({ state: "available", isRepository: true, branch: "main", detached: false, workingTreeModified: true, refreshedAt: 100 }), true);
+  assert.equal(isGitSummary({ state: "available", isRepository: true, branch: null, detached: true, workingTreeModified: false, refreshedAt: 100 }), true);
+  assert.equal(isGitSummary({ state: "not_repository", isRepository: false, branch: null, detached: false, workingTreeModified: null, refreshedAt: 100 }), true);
   assert.equal(isGitSummary({ state: "git_unavailable", isRepository: null, branch: null, detached: false, workingTreeModified: null, refreshedAt: null }), true);
   assert.equal(isGitSummary({ state: "failed", isRepository: null, branch: null, detached: false, workingTreeModified: null, refreshedAt: null, stderr: "secret" }), false);
+  assert.equal(isGitSummary({ state: "available", isRepository: true, branch: "x".repeat(513), detached: false, workingTreeModified: false, refreshedAt: 100 }), false);
+  assert.equal(isGitSummary({ state: "timed_out", isRepository: null, branch: null, detached: false, workingTreeModified: null, refreshedAt: null }), true);
   assert.equal(isProjectSettingsView({ projectId, revision: 1, globalRevision: 2, values: [
     { key: "search_engine", value: "bing", source: "global" },
     { key: "ai_defaults", value: null, source: "project" },

@@ -452,6 +452,7 @@ impl OpenFileRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitSummaryRequest {
     pub project_id: String,
+    #[serde(default, deserialize_with = "present_value")]
     pub refresh: Option<bool>,
 }
 
@@ -615,6 +616,43 @@ mod tests {
             serde_json::from_value::<ProjectIdRequest>(json!({
                 "projectId": "synthetic-id",
                 "authorized": true
+            }))
+            .is_err()
+        );
+        let id = "c14e7b09-b84c-44bc-9b57-a7182e70b056";
+        assert_eq!(
+            serde_json::from_value::<GitSummaryRequest>(json!({ "projectId": id }))
+                .unwrap()
+                .refresh,
+            None
+        );
+        assert_eq!(
+            serde_json::from_value::<GitSummaryRequest>(json!({
+                "projectId": id,
+                "refresh": false
+            }))
+            .unwrap()
+            .refresh,
+            Some(false)
+        );
+        assert!(
+            serde_json::from_value::<GitSummaryRequest>(json!({
+                "projectId": id,
+                "refresh": null
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<GitSummaryRequest>(json!({
+                "projectId": id,
+                "refresh": "true"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<GitSummaryRequest>(json!({
+                "projectId": id,
+                "rawOutput": true
             }))
             .is_err()
         );

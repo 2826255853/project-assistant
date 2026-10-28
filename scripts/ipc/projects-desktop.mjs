@@ -15,6 +15,21 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
   assert.equal(view.authorization, "granted"); assert.equal(view.lastUsedAt, null);
   assert.equal(view.availability, "available"); assert.equal(view.revision, 1);
   assert.equal("directoryIdentity" in view, false);
+  const summary = (await call("project_git_summary", {projectId:id, refresh:true})).data;
+  assert.deepEqual({state:summary.state, isRepository:summary.isRepository, branch:summary.branch, detached:summary.detached, workingTreeModified:summary.workingTreeModified}, {
+    state:"available", isRepository:true, branch:"s2-06-fixture", detached:false, workingTreeModified:false,
+  });
+  assert.equal(Number.isSafeInteger(summary.refreshedAt), true);
+  assert.equal((await call("project_get",{projectId:id})).data.lastUsedAt,null);
+  await fixture("project_git_dirty");
+  const cachedBeforeRefresh = (await call("project_git_summary", {projectId:id})).data;
+  assert.equal(cachedBeforeRefresh.workingTreeModified,false);
+  const dirty = (await call("project_git_summary", {projectId:id, refresh:true})).data;
+  assert.equal(dirty.state,"available"); assert.equal(dirty.workingTreeModified,true);
+  const cached = (await call("project_git_summary", {projectId:id})).data;
+  assert.equal(cached.workingTreeModified,true);
+  assert.equal((await call("project_get",{projectId:id})).data.lastUsedAt,null);
+  report.results.push("正式 Rust Git IPC 识别分支、干净/已修改工作区和刷新缓存，不写项目使用时间");
   // No path-containing screenshots, responses, logs or report fields are saved.
   for (const [command, params, version, code] of [
     ["projects_add_from_picker", {absolutePath:"synthetic-private-input"}, 1, "PA_IPC_INVALID_REQUEST"],
@@ -26,6 +41,8 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
     ["project_remove", {projectId:id, expectedRevision:0}, 1, "PA_IPC_INVALID_REQUEST"],
     ["project_remove", {projectId:id, expectedRevision:1, unknown:"x".repeat(8192)}, 1, "PA_VALIDATION_INPUT_TOO_LARGE"],
   ]) assert.equal((await call(command,params,version)).error.code,code);
+  assert.equal((await call("project_git_summary", {projectId:id, refresh:"yes"})).error.code,"PA_IPC_INVALID_REQUEST");
+  assert.equal((await call("project_git_summary", {projectId:id, unknown:true})).error.code,"PA_IPC_INVALID_REQUEST");
   report.results.push("main 三个项目命令的版本、未知字段、根路径伪造、UUID、大小和修订校验通过");
   await verifyProjectOpenDesktop({call, until, report, fixtureDirectory, id});
   await fixture("audit_fail_write");
@@ -52,13 +69,13 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
     try {
       await new Promise((done,reject)=>{socket.addEventListener("open",done,{once:true});socket.addEventListener("error",reject,{once:true});});socket.addEventListener("message",receive);
       await until(()=>evaluate("Boolean(window.__TAURI_INTERNALS__)",socket),Boolean);
-      for(const command of ["projects_add_from_picker","projects_list","project_get","project_remove","project_open_directory","project_open_file","project_pick_file"]) assert.equal(await evaluate(`${invoke(command,{projectId:id,expectedRevision:2})}.then(()=>false,()=>true)`,socket),true);
+      for(const command of ["projects_add_from_picker","projects_list","project_get","project_git_summary","project_remove","project_open_directory","project_open_file","project_pick_file"]) assert.equal(await evaluate(`${invoke(command,{projectId:id,expectedRevision:2})}.then(()=>false,()=>true)`,socket),true);
     } finally {socket.close();}
     if(close) await fixture(close);
   }
   await fixture("navigate_remote");
   await until(()=>evaluate("document.title"),title=>title==="IPC remote fixture");
-  for(const command of ["projects_add_from_picker","projects_list","project_get","project_remove","project_open_directory","project_open_file","project_pick_file"]) assert.equal(await evaluate(`${invoke(command,{projectId:id})}.then(()=>false,()=>true)`),true);
+  for(const command of ["projects_add_from_picker","projects_list","project_get","project_git_summary","project_remove","project_open_directory","project_open_file","project_pick_file"]) assert.equal(await evaluate(`${invoke(command,{projectId:id})}.then(()=>false,()=>true)`),true);
   await cdp("Page.navigate",{url:mainUrl}); await until(()=>evaluate("Boolean(document.querySelector('.app-shell'))"),Boolean);
   report.results.push("overlay、未知本地窗口、远端 main 的项目 capability 拒绝通过；未自动打开原生选择器");
 }

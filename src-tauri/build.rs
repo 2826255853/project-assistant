@@ -3,6 +3,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "projects_add_from_picker",
             "project_get",
+            "project_git_summary",
             "projects_list",
             "project_open_directory",
             "project_open_file",

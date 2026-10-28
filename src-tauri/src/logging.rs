@@ -88,6 +88,7 @@ fn now_ms() -> Result<u64> {
 enum Command {
     ProjectsAddFromPicker,
     ProjectGet,
+    ProjectGitSummary,
     ProjectsList,
     ProjectOpenDirectory,
     ProjectOpenFile,
@@ -123,6 +124,7 @@ impl Command {
         Some(match value {
             "projects_add_from_picker" => Self::ProjectsAddFromPicker,
             "project_get" => Self::ProjectGet,
+            "project_git_summary" => Self::ProjectGitSummary,
             "projects_list" => Self::ProjectsList,
             "project_open_directory" => Self::ProjectOpenDirectory,
             "project_open_file" => Self::ProjectOpenFile,

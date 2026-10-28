@@ -6,6 +6,7 @@
   "permissions": [
     "allow-projects-add-from-picker",
     "allow-project-get",
+    "allow-project-git-summary",
     "allow-projects-list",
     "allow-project-open-directory",
     "allow-project-open-file",

@@ -7,6 +7,8 @@ mod route;
 mod tests;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub(crate) use windows::{Job, spawn_in_job};
 
 use crate::{
     credentials::{self, SecretBuffer},
@@ -37,7 +39,7 @@ pub(crate) const ADAPTER_VERSION: &str = "owned-stdio-relay-v1";
 const MAX_FRAME: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Failure {
+pub(crate) enum Failure {
     Unsafe,
     Endpoint,
     Executable,

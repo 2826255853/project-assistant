@@ -101,7 +101,7 @@ pub struct Job(HANDLE);
 // The handle is owned, never exposed, and only used for job lifetime control.
 unsafe impl Send for Job {}
 impl Job {
-    pub fn attach_suspended(child: &std::process::Child) -> Result<Self> {
+    pub(crate) fn attach_suspended(child: &std::process::Child) -> Result<Self> {
         use std::os::windows::io::AsRawHandle;
         let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
         if handle.is_null() {
@@ -168,6 +168,26 @@ impl Job {
         }
     }
 }
+
+/// Starts an owned child suspended, places it in a kill-on-close Job, then
+/// resumes it. This closes the window where the process could create an
+/// untracked descendant before ownership is established.
+pub(crate) fn spawn_in_job(
+    command: &mut std::process::Command,
+) -> std::io::Result<(std::process::Child, Job)> {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x0800_0004); // CREATE_NO_WINDOW | CREATE_SUSPENDED
+    let mut child = command.spawn()?;
+    match Job::attach_suspended(&child) {
+        Ok(job) => Ok((child, job)),
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(std::io::Error::other("owned child setup failed"))
+        }
+    }
+}
+
 impl Drop for Job {
     fn drop(&mut self) {
         unsafe {

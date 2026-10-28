@@ -6,6 +6,7 @@ mod logging;
 mod overlay;
 mod owned_process;
 pub mod project_contract;
+mod project_git;
 pub mod project_paths;
 mod projects;
 mod providers;
@@ -200,6 +201,33 @@ async fn project_get(
         Err(e) => Err(e),
     };
     complete(&app, "project_get", id, result)
+}
+
+#[tauri::command]
+async fn project_git_summary(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<project_contract::GitSummary> {
+    let id = ipc::correlation_id();
+    let parsed =
+        project_request::<project_contract::GitSummaryRequest>(&window, request).and_then(|p| {
+            p.validate()?;
+            Ok(p)
+        });
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                projects::git_summary(&a, &p.project_id, p.refresh.unwrap_or(false), &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "project_git_summary", id, result)
 }
 
 #[tauri::command]
@@ -991,6 +1019,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             projects_add_from_picker,
             project_get,
+            project_git_summary,
             projects_list,
             project_open_directory,
             project_open_file,
