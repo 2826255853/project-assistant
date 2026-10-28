@@ -62,6 +62,29 @@ async fn projects_add_from_picker(
 }
 
 #[tauri::command]
+async fn projects_list(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<project_contract::ProjectListPage> {
+    let id = ipc::correlation_id();
+    let parsed = project_request::<project_contract::ListRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        Ok(p)
+    });
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            tauri::async_runtime::spawn_blocking(move || projects::list(&a, &p))
+                .await
+                .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "projects_list", id, result)
+}
+
+#[tauri::command]
 async fn project_get(
     request: serde_json::Value,
     app: tauri::AppHandle,
@@ -875,6 +898,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             projects_add_from_picker,
             project_get,
+            projects_list,
             project_remove,
             desktop_initialize,
             app_get_status,

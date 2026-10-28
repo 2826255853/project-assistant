@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { verifyProjectSearchDesktop } from "./project-search-desktop.mjs";
 
 export async function verifyProjectsDesktop({evaluate, until, report, debugPort, receive, cdp, mainUrl, fixtureDirectory}) {
   const invoke = (command, params = {}, apiVersion = 1) => `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, {request:${JSON.stringify({apiVersion, params})}})`;
@@ -37,6 +38,7 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
   assert.equal((await call("project_get",{projectId:id})).error.code,"PA_PROJECT_NOT_FOUND");
   assert.equal(await readFile(join(fixtureDirectory,"moved-project","keep.txt"),"utf8"),"source-sentinel");
   report.results.push("真实 IPC 审计故障回滚、路径失效保留、修订冲突及撤权移除通过；源文件保持不变");
+  await verifyProjectSearchDesktop({evaluate, call, fixture, report});
   for (const [query, create, close] of [["window=overlay",null,null],["window=denied","create_denied_window","close_denied_window"]]) {
     if(create) await fixture(create);
     const target=await until(async()=> (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()).find(v=>v.url.includes(query)),Boolean);
@@ -44,13 +46,13 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
     try {
       await new Promise((done,reject)=>{socket.addEventListener("open",done,{once:true});socket.addEventListener("error",reject,{once:true});});socket.addEventListener("message",receive);
       await until(()=>evaluate("Boolean(window.__TAURI_INTERNALS__)",socket),Boolean);
-      for(const command of ["projects_add_from_picker","project_get","project_remove"]) assert.equal(await evaluate(`${invoke(command,{projectId:id,expectedRevision:2})}.then(()=>false,()=>true)`,socket),true);
+      for(const command of ["projects_add_from_picker","projects_list","project_get","project_remove"]) assert.equal(await evaluate(`${invoke(command,{projectId:id,expectedRevision:2})}.then(()=>false,()=>true)`,socket),true);
     } finally {socket.close();}
     if(close) await fixture(close);
   }
   await fixture("navigate_remote");
   await until(()=>evaluate("document.title"),title=>title==="IPC remote fixture");
-  for(const command of ["projects_add_from_picker","project_get","project_remove"]) assert.equal(await evaluate(`${invoke(command,{projectId:id})}.then(()=>false,()=>true)`),true);
+  for(const command of ["projects_add_from_picker","projects_list","project_get","project_remove"]) assert.equal(await evaluate(`${invoke(command,{projectId:id})}.then(()=>false,()=>true)`),true);
   await cdp("Page.navigate",{url:mainUrl}); await until(()=>evaluate("Boolean(document.querySelector('.app-shell'))"),Boolean);
   report.results.push("overlay、未知本地窗口、远端 main 的项目 capability 拒绝通过；未自动打开原生选择器");
 }

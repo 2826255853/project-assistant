@@ -6,23 +6,23 @@ use crate::{
 };
 use std::{fs, path::PathBuf, process::Command};
 
-struct Fixture {
-    root: PathBuf,
+pub(super) struct Fixture {
+    pub(super) root: PathBuf,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = std::env::temp_dir().join(format!("pa-s2-03-{}", correlation_id()));
         fs::create_dir_all(root.join("source 中文 & 空格")).unwrap();
         fs::write(root.join("source 中文 & 空格/keep.txt"), "source-sentinel").unwrap();
         Self { root }
     }
-    fn source(&self) -> PathBuf {
+    pub(super) fn source(&self) -> PathBuf {
         self.root.join("source 中文 & 空格")
     }
-    fn db(&self) -> Storage {
+    pub(super) fn db(&self) -> Storage {
         Storage::open(&self.root.join("data")).unwrap()
     }
-    fn register(&self, db: &mut Storage) -> ProjectView {
+    pub(super) fn register(&self, db: &mut Storage) -> ProjectView {
         db.projects()
             .register(
                 Some(authorize_fixture(&self.source()).unwrap()),
@@ -31,7 +31,7 @@ impl Fixture {
             .unwrap()
             .unwrap()
     }
-    fn unchanged(&self) {
+    pub(super) fn unchanged(&self) {
         assert_eq!(
             fs::read(self.source().join("keep.txt")).unwrap(),
             b"source-sentinel"
@@ -43,7 +43,7 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
-fn count(db: &Storage, table: &str) -> i64 {
+pub(super) fn count(db: &Storage, table: &str) -> i64 {
     db.connection
         .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
         .unwrap()

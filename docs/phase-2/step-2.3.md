@@ -6,6 +6,8 @@
 
 ## 实现与接入
 
+2026-10-28 接续：2.4 已增加 main-only 列表/搜索及稳定分页，当前 `verify:projects` 报告改为 `artifacts/phase-2-4/report.json`。以下数字和未开放清单保留 2.3 当时范围，最新结果见 [步骤 2.4](step-2.4.md)。
+
 | 入口 | 职责 |
 | --- | --- |
 | `src-tauri/migrations/0005_projects.sql` | schema v5：授权身份、修订、可用性、撤权移除时间、可见身份唯一索引，以及项目授权审计类型；v1–v4 SQL 与校验和不变 |

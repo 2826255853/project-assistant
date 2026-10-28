@@ -11,11 +11,14 @@ import { isLogStatus } from "./logging";
 import { isCredentialMutation } from "./credentials";
 import { isProviderList, isProviderProfile, isModels, isReceipt, isOperation, isRemoved, isAccepted } from "./providers";
 import { errorForCode } from "./errors";
-import { isProjectView, isProjectPickerResult, isRemovedProject } from "./projects";
+import { isProjectView, isProjectPickerResult, isRemovedProject, isProjectListPage } from "./projects";
+import { ProjectSearchController } from "./projectSearch";
+import type { ProjectSearchState } from "./projectSearch";
 
 type Name = keyof ImplementedCommandMap;
 const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMap[K]["data"] } = {
   projects_add_from_picker: isProjectPickerResult, project_get: isProjectView, project_remove: isRemovedProject,
+  projects_list: isProjectListPage,
   providers_list: isProviderList, provider_save: isProviderProfile, provider_set_enabled: isProviderProfile,
   provider_delete: isRemoved, provider_models: isModels, provider_test: isReceipt, provider_switch: isReceipt,
   operation_get: isOperation, operation_cancel: isAccepted,
@@ -70,6 +73,8 @@ export async function controlOverlay(action: OverlayAction["action"], params: Re
   return call("overlay_control", { action, ...params } as OverlayAction);
 }
 export const getAppStatus = () => call("app_get_status", {});
+export const createProjectSearch = (publish: (state: ProjectSearchState) => void) =>
+  new ProjectSearchController((params, options) => call("projects_list", params, options), publish);
 export async function listenAppEvents(callback: (event: unknown) => void) {
   const event = "project-assistant://event/v1";
   const handler = transformCallback<{ payload: unknown }>(({ payload }) => callback(payload));

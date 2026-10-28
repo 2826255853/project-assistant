@@ -11,6 +11,10 @@ use crate::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::path::Path;
 
+mod search;
+#[cfg(any(test, debug_assertions))]
+pub(crate) mod search_fixture;
+
 pub struct ProjectRepository<'a> {
     connection: &'a mut Connection,
 }
@@ -326,5 +330,7 @@ impl<'a> ProjectRepository<'a> {
     }
 }
 
+#[cfg(test)]
+mod search_tests;
 #[cfg(test)]
 mod tests;

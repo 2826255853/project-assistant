@@ -3,6 +3,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "projects_add_from_picker",
             "project_get",
+            "projects_list",
             "project_remove",
             "desktop_initialize",
             "app_get_status",

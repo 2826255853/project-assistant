@@ -1,7 +1,7 @@
 // Windows-only framework smoke test. CDP is enabled only for this child process.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createWriteStream } from "node:fs";
 import { resolve } from "node:path";
@@ -44,6 +44,7 @@ const env = {
   PA_SHELL_FAIL_ONCE: scenario === "shell-error" ? "1" : "0",
   PA_IPC_VERIFY: shell ? "1" : "0",
   PA_OVERLAY_VERIFY_DIR: overlayFixtureDirectory,
+  ...(scenario === "projects" ? { PA_LOG_VERIFY_DIR: resolve(overlayFixtureDirectory, "logs") } : {}),
   PA_IPC_REMOTE_URL: ["ipc", "credentials", "providers", "projects"].includes(scenario) ? `http://127.0.0.1:${remote.address().port}/` : "",
   CARGO_TERM_COLOR: "never",
   CARGO_TERM_PROGRESS_WHEN: "never",
@@ -321,7 +322,18 @@ try {
     assert.ok(processOutput.includes("PA_DESKTOP_INITIALIZATION_FAILED"));
   }
   if (scenario === "credentials") assert.ok(!processOutput.includes("synthetic-credential-desktop-DO-NOT-EXPORT"), "Credential must not enter process output");
-  if (scenario === "projects") for (const sentinel of ["synthetic-project-private-path","synthetic-private-input"]) assert.ok(!processOutput.includes(sentinel));
+  if (scenario === "projects") {
+    const logDirectory = resolve(overlayFixtureDirectory, "logs");
+    const files = (await readdir(logDirectory)).filter(name=>name.endsWith(".jsonl"));
+    assert.ok(files.length > 0);
+    const productLogs = (await Promise.all(files.map(name=>readFile(resolve(logDirectory,name),"utf8")))).join("\n");
+    assert.ok(productLogs.includes('"projects_list"'));
+    for (const sentinel of ["synthetic-project-private-path","synthetic-private-input","synthetic-private-path","无匹配哨兵"]) {
+      assert.ok(!processOutput.includes(sentinel));
+      assert.ok(!productLogs.includes(sentinel));
+    }
+    report.results.push("进程与独立产品 JSONL 日志不含合成路径和搜索词哨兵；日志夹具随桌面清理");
+  }
   report.passed = true;
   console.log(report.results.join("\n"));
 } catch (error) {

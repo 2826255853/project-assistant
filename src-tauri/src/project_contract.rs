@@ -1,4 +1,4 @@
-//! Phase 2 project DTOs. S2-03 wires register/get/remove only; other types remain
+//! Phase 2 project DTOs. S2-03/04 wire register/list/get/remove; other types remain
 //! future contracts until their implementation step is ready.
 use serde::{Deserialize, Serialize};
 
@@ -342,9 +342,18 @@ pub struct EmptyRequest {}
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListRequest {
+    #[serde(default, deserialize_with = "present_value")]
     pub query: Option<String>,
+    #[serde(default, deserialize_with = "present_value")]
     pub cursor: Option<String>,
+    #[serde(default, deserialize_with = "present_value")]
     pub limit: Option<u16>,
+}
+
+fn present_value<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 impl ListRequest {

@@ -88,6 +88,7 @@ fn now_ms() -> Result<u64> {
 enum Command {
     ProjectsAddFromPicker,
     ProjectGet,
+    ProjectsList,
     ProjectRemove,
     DesktopInitialize,
     AppGetStatus,
@@ -119,6 +120,7 @@ impl Command {
         Some(match value {
             "projects_add_from_picker" => Self::ProjectsAddFromPicker,
             "project_get" => Self::ProjectGet,
+            "projects_list" => Self::ProjectsList,
             "project_remove" => Self::ProjectRemove,
             "desktop_initialize" => Self::DesktopInitialize,
             "app_get_status" => Self::AppGetStatus,

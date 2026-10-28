@@ -6,6 +6,8 @@
 
 ## 目标与边界
 
+2026-10-28 接续（S2-04）：新增 main-only `projects_list`，沿用既有请求/页面 DTO 和大小边界；显式 null 不等同缺省，严格拒绝。排序和匹配等级、分页指纹、查询变化以及客户端竞态的具体规则见 [步骤 2.4](step-2.4.md)。列表仅读数据库中最近一次可用性观测，不作文件系统遍历或自动授权；游标格式错误返回 `PA_IPC_INVALID_REQUEST`，查询/排序/可见项目快照改变后的续页返回 `PA_PROJECT_CONFLICT_REVISION`。其他待实现接口边界不变。
+
 本步骤对齐 FR-PM-001–007、M2 和阶段 1→2 移交要求，为后续路径授权、仓储、搜索、系统打开、Git 摘要和页面工作包确定共同语义。契约依照计划文档第 22 章及当前 IPC v1、SQLite schema v4、窗口授权、设置和日志实现制定。
 
 范围仅包括项目服务的目标 DTO、拟议 IPC、main/overlay 权限、固定错误、审计要求和路径安全用例。目录选择、路径身份核验、仓储、业务命令、界面、活动项目运行状态均由后续步骤实现和验收。schema v4 中虽已有 `projects` 和 `project_usage` 表，但尚无正式项目仓储或项目授权记录；不得把现有表或阶段 0 的路径 guard 当成生产授权。
@@ -80,7 +82,7 @@ interface ProjectSettingsView {
 | 拟议命令/入口 | 输入与返回（`data`） | 授权与副作用 | 主要失败 |
 | --- | --- | --- | --- |
 | `projects_add_from_picker` | `{}` → `{ outcome: "registered", project: ProjectView } \| { outcome: "cancelled" }` | main only。选择器由 Rust 发起，不收前端路径；取消零写入。登记成功可写项目、授权与审计。 | `PA_PROJECT_PICKER_FAILED`、`PA_PROJECT_PATH_UNSAFE`、`PA_PROJECT_PATH_UNAVAILABLE`、`PA_PROJECT_PATH_CHANGED`、`PA_PROJECT_CONFLICT_REVISION`、存储/审计错误。 |
-| `projects_list` | `{ query?: string, cursor?: string, limit?: number }` → `ProjectListPage` | main only。仅读已登记记录；空/缺省查询返回列表。排序采用全局 `project_sort`，默认 recent；搜索不遍历磁盘。 | `PA_VALIDATION_INPUT_TOO_LARGE`、`PA_IPC_INVALID_REQUEST`、存储错误。 |
+| `projects_list` | `{ query?: string, cursor?: string, limit?: number }` → `ProjectListPage` | main only。仅读已登记记录；空/缺省查询返回列表。排序采用全局 `project_sort`，默认 recent；搜索不遍历磁盘。 | `PA_VALIDATION_INPUT_TOO_LARGE`、`PA_IPC_INVALID_REQUEST`、存储错误；S2-04 追加 `PA_PROJECT_CONFLICT_REVISION` 表示续页与查询/排序/数据快照冲突，须从首屏重新读取。 |
 | `project_get` | `{ projectId: string }` → `ProjectView` | main only。读取已登记记录；无效授权仍返回固定可用状态，不因列表查询自动修复授权。 | `PA_PROJECT_NOT_FOUND`、存储错误。 |
 | `project_select` | `{ projectId: string }` → `{ activeProject: ActiveProject }` | main only。必须在 Rust 复核登记、授权和路径身份后，更新活动项目并记录一次显式使用；不打开目录、不启动任务。成功后发无载荷状态失效事件。 | `PA_PROJECT_NOT_FOUND`、`PA_PROJECT_PATH_UNAVAILABLE`、`PA_PROJECT_PATH_CHANGED`、存储错误。 |
 | `project_remove` | `{ projectId: string, expectedRevision: number }` → `{ removed: true, retainedForHistory: boolean }` | main only。修订匹配后，在事务内撤销授权、清理活动项目、记审计并删除或保留历史引用行；永不删除源文件。 | `PA_PROJECT_NOT_FOUND`、`PA_PROJECT_CONFLICT_REVISION`、`PA_AUDIT_WRITE_FAILED`、存储错误。任何失败均不产生部分撤权。 |

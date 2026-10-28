@@ -6,6 +6,7 @@
   "permissions": [
     "allow-projects-add-from-picker",
     "allow-project-get",
+    "allow-projects-list",
     "allow-project-remove",
     "core:event:allow-listen",
     "core:event:allow-unlisten",

@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { arch, cpus, release, totalmem, version } from "node:os";
 
 assert.equal(process.platform,"win32");
 assert.ok(process.env.npm_execpath,"Run via npm run verify:projects");
-const root=resolve(import.meta.dirname,".."), output=join(root,"artifacts","phase-2-3");
+const root=resolve(import.meta.dirname,".."), output=join(root,"artifacts","phase-2-4");
 await mkdir(output,{recursive:true});
-const report={step:"2.3",date:new Date().toISOString(),timezone:"Asia/Shanghai",passed:false,syntheticDataOnly:true,checks:[],desktops:[],limits:["Native picker mouse/keyboard flow remains manual acceptance in 2.9.","Usage selection/OS acceptance uses repository callbacks; active project is 2.8 and system delivery is 2.5.","No real tasks, keys or model requests."]};
+const report={step:"2.4",date:new Date().toISOString(),timezone:"Asia/Shanghai",passed:false,syntheticDataOnly:true,checks:[],desktops:[],limits:["Native picker mouse/keyboard flow remains manual acceptance in 2.9.","Usage selection/OS acceptance uses repository callbacks; active project is 2.8 and system delivery is 2.5.","Search P95 measures real WebView IPC and backend; project UI integration/rendering is 2.7.","No real tasks, keys or model requests."]};
 async function run(label,command,args) {
   console.log(label); let captured="";
   try {
@@ -23,7 +24,7 @@ async function run(label,command,args) {
 }
 const npm=(label,args)=>run(label,process.execPath,[process.env.npm_execpath,...args]);
 try {
-  report.environment={node:process.version,npm:(await npm("npm-version",["--version"])).trim(),rust:(await run("rust-version","rustc",["--version"])).trim()};
+  report.environment={node:process.version,npm:(await npm("npm-version",["--version"])).trim(),rust:(await run("rust-version","rustc",["--version"])).trim(),os:version(),release:release(),arch:arch(),cpu:cpus()[0]?.model,logicalProcessors:cpus().length,memoryGiB:Math.round(totalmem()/1024**3)};
   await npm("frontend-build",["run","build"]);
   await run("rust-format","cargo",["fmt","--check","--manifest-path","src-tauri/Cargo.toml"]);
   const tests=await run("rust-tests","cargo",["test","--locked","--manifest-path","src-tauri/Cargo.toml","--lib"]);
@@ -40,4 +41,4 @@ try {
   report.passed=true;
 } catch(error) {report.error=String(error);console.error(report.error);process.exitCode=1;}
 finally {await writeFile(join(output,"report.json"),JSON.stringify(report,null,2)+"\n");}
-console.log(`Project storage verification: ${report.passed?"passed":"failed"}; artifacts/phase-2-3/report.json`);
+console.log(`Project storage/search verification: ${report.passed?"passed":"failed"}; artifacts/phase-2-4/report.json`);

@@ -1,10 +1,25 @@
-//! S2-03 main-window entry points. Selection/OS open/active state follow later.
+//! S2-03/04 main-window entry points. Selection/OS open/active state follow later.
 use crate::{
     ipc::ErrorCode,
     project_contract::ProjectView,
     storage::{Storage, StorageState},
 };
 use tauri::Manager;
+
+pub fn list(
+    app: &tauri::AppHandle,
+    request: &crate::project_contract::ListRequest,
+) -> Result<crate::project_contract::ProjectListPage, ErrorCode> {
+    #[cfg(windows)]
+    {
+        with_repository(app, |storage| storage.projects().list(request))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, request);
+        Err(ErrorCode::ProjectPathUnavailable)
+    }
+}
 
 #[derive(serde::Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
@@ -104,6 +119,9 @@ pub(crate) fn fixture(app: &tauri::AppHandle, action: &str) -> Result<(), ErrorC
         }
         let source = directory.join("synthetic-project-private-path");
         match action {
+            "project_search_seed" => {
+                crate::storage::projects::search_fixture::seed(&mut storage.connection)?
+            }
             "project_seed" => {
                 std::fs::create_dir_all(&source).map_err(|_| ErrorCode::ProjectPathUnavailable)?;
                 std::fs::write(source.join("keep.txt"), "source-sentinel")
