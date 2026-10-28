@@ -11,11 +11,13 @@
 - 1.1/1.4 的实际托盘鼠标操作、物理显示器拔插和实时 DPI 变化仍需人工复核，复审点为 1.10；注入测试不能替代硬件验收。
 - 步骤 1.6（S1-05）系统凭据库已通过本机合成凭据验收（2026-10-19），2026-10-20 已在固定基线 Node/npm 24.18.0/11.16.0、Rust 1.99.0 下完成收尾复验：7 个独立进程读写/替换/删除/清理、真实 OS 与 SQLite 提交故障补偿、dev/built 桌面及存储回归。服务/权限失败为适配层注入。1.7、1.8 已随后完成，1.9 AI 配置页已实现；2026-10-23 已补通过 `verify:providers`，包括 104 项 Rust 单测、实际 CLI/双合成 HTTPS、隔离回归和 built/dev provider/credential 桌面场景。页面控件仍待人工点验，后续为 1.10 阶段回归。
 - 步骤 1.7（S1-06）已实现正式 Rust 自有 stdio 候选适配器和配置层实际路由隔离，见 `docs/phase-1/step-1.7.md`；每候选独立固定上游转发层仅在 Rust 内存中使用站点 Key，子进程只持临时入口凭据。正常启动只初始化/清理自有资源，不启动 Codex。项目管理、AI 配置和真实任务入口尚未开放；1.8 profile/能力/切换恢复已完成配置层验收；阶段 3 网关仍待实现。不能宣布 M1 或阶段 1 整体完成。
-- 阶段 2 步骤 2.1（S2-01）于 2026-10-25 完成契约定义；步骤 2.2（S2-02）于 2026-10-26 实现 Windows 原生目录选择、NTFS/ReFS 本地路径约束、逐级重解析点拒绝、短期身份句柄、卷序列号/文件 ID 身份绑定、大小写去重键和替换复核，合成文件系统测试通过，记录见 `docs/phase-2/step-2.2.md`。2.3 已于 2026-10-27 通过仓储/恢复范围：schema v5、登记/详情/撤权 main-only 命令、授权/审计与使用事务、启动复核；当轮 `verify:projects` 通过 136 Rust、29 IPC、15 离线、46 存储及 built/dev 项目桌面，详见 `docs/phase-2/step-2.3.md`。列表搜索最新状态见下一条；系统打开、Git、活动项目及原生选择器人工点验仍待 2.5–2.9，M2 未通过。
+- 阶段 2 步骤 2.1（S2-01）于 2026-10-25 完成契约定义；步骤 2.2（S2-02）于 2026-10-26 实现 Windows 原生目录选择、NTFS/ReFS 本地路径约束、逐级重解析点拒绝、短期身份句柄、卷序列号/文件 ID 身份绑定、大小写去重键和替换复核，合成文件系统测试通过，记录见 `docs/phase-2/step-2.2.md`。2.3 已于 2026-10-27 通过仓储/恢复范围：schema v5、登记/详情/撤权 main-only 命令、授权/审计与使用事务、启动复核；当轮 `verify:projects` 通过 136 Rust、29 IPC、15 离线、46 存储及 built/dev 项目桌面，详见 `docs/phase-2/step-2.3.md`。列表搜索与系统打开最新状态见后续条目；Git、活动项目及原生选择器人工点验仍待 2.6–2.9，M2 未通过。
 
-- 步骤 2.4（S2-04）于 2026-10-28 通过列表/搜索服务范围：新增 main-only `projects_list`、全局 project_sort、稳定分页、中文/路径子串和字符顺序匹配、响应代次及 IME 控制器。`verify:projects` 最新报告为 `artifacts/phase-2-4/report.json`，142 Rust、33 IPC、15 离线、52 存储和 built/dev 通过；1,000 条合成记录 WebView IPC 搜索 P95 为 built 21.1 ms / dev 24.3 ms。项目查询仅读元数据及已保存可用性，不写使用记录、不遍历文件系统；页面/实际中文输入框在 2.7。系统打开、Git、活动项目及选择器人工点验仍待 2.5–2.9，M2 未通过。
+- 步骤 2.4（S2-04）于 2026-10-28 通过列表/搜索服务范围：新增 main-only `projects_list`、全局 project_sort、稳定分页、中文/路径子串和字符顺序匹配、响应代次及 IME 控制器。`verify:projects` 当轮报告为 `artifacts/phase-2-4/report.json`，142 Rust、33 IPC、15 离线、52 存储和 built/dev 通过；1,000 条合成记录 WebView IPC 搜索 P95 为 built 21.1 ms / dev 24.3 ms。项目查询仅读元数据及已保存可用性，不写使用记录、不遍历文件系统；页面/实际中文输入框在 2.7。系统打开最新状态见 2.5；Git、活动项目及选择器人工点验仍待 2.6–2.9，M2 未通过。
 
-优先阅读 `README.md`、`计划文档.txt` 第 21/22 节、`docs/phase-2/step-2.4.md`、`docs/phase-2/step-2.3.md`、`docs/phase-2/step-2.1.md`、`docs/phase-1/step-1.7.md` 和 `step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
+- 步骤 2.5（S2-05）于 2026-10-28 有条件通过：新增 main-only `project_open_directory/project_open_file/project_pick_file`，默认程序/结构化编辑器真实交付、相对文件结果接受边界、固定失败和无自动重试。最终目标通过只回滚的 NTFS/TxF 元数据保护，补上属性句柄可绕过普通共享锁原地设置重解析点的漏洞；保护不可用、ReFS、属性写权限不足等拒绝打开，不降级。`verify:projects` 最新为 `artifacts/phase-2-5/report.json`，151 Rust、33 IPC、15 离线、52 存储及 built/dev 通过。目录/中文文本与真实合成 PE 编辑器均验证系统接受，未声明外部加载完成；ReFS 打开未实测，原生选择器人工点验仍在 2.9。实现与平台限制见 `docs/phase-2/step-2.5.md`，后续为 2.6 Git；M2 未通过。上面 2.3/2.4 的报告及待验说明保留当轮历史范围。
+
+优先阅读 `README.md`、`计划文档.txt` 第 21/22 节、`docs/phase-2/step-2.5.md`、`docs/phase-2/step-2.4.md`、`docs/phase-2/step-2.3.md`、`docs/phase-2/step-2.1.md`、`docs/phase-1/step-1.7.md` 和 `step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
 
 ## 已确认的产品约定
 
@@ -32,7 +34,7 @@
 - `src/app/Bootstrap.tsx`：桌面初始化、失败重试、渲染边界和显式阶段 0 页；`src/App.tsx`：导航、工作台、诊断和占位页面。
 - `src/pages/SettingsPage.tsx`：正式全局设置表单；`OverlayPage.tsx`：悬浮球/展开面板，草稿仅在本次进程内保留，发送按钮不可用。
 - `src/ipc/contracts.ts`：DTO；`client.ts`：集中调用入口；`response.ts`、`settings.ts`、`state.ts`：运行时返回校验和状态恢复；`transport.ts`：超时/停止等待。`CommandMap` 含未来接口，**实际可调用范围看 `ImplementedCommandMap` 和 Rust 注册表**。
-- `src/ipc/projects.ts`、`src-tauri/src/project_contract.rs`：项目 DTO 与校验；2.3 登记/详情/移除、2.4 列表搜索已接入 client、Rust 注册和 main capability，完整项目服务状态仍待后续。`src/ipc/projectSearch.ts` 为分页/响应代次/IME 控制器，`storage/projects/search.rs` 为元数据搜索、稳定排序和指纹游标。`src-tauri/src/project_paths.rs` 与 `project_paths/windows.rs`：2.2 Windows 选择器、路径核验与身份句柄；`storage/projects.rs` 为 2.3 持久仓储/使用事务及启动复核，`projects.rs` 为服务入口，实际系统打开仍须按 2.5 单独验证竞态。
+- `src/ipc/projects.ts`、`src-tauri/src/project_contract.rs`：项目 DTO 与校验；2.3 登记/详情/移除、2.4 列表搜索和 2.5 目录/文件打开/文件选择已接入 client、Rust 注册和 main capability，完整项目服务状态仍待后续。`src/ipc/projectSearch.ts` 为分页/响应代次/IME 控制器，`storage/projects/search.rs` 为元数据搜索、稳定排序和指纹游标。`src-tauri/src/project_paths.rs` 与 `project_paths/windows.rs`：2.2 Windows 选择器、路径核验与身份句柄；`project_paths/windows/delivery.rs`：2.5 名称句柄与只回滚 NTFS 元数据保护、默认程序/编辑器交付与受限文件结果；`storage/projects.rs` 为持久仓储/使用事务及启动复核，`projects.rs` 为服务入口。
 - `src-tauri/src/lib.rs`：命令封装、启动顺序、状态注入、窗口生命周期和命令注册；`desktop.rs`：初始化模式；`app_state.rs`：权威状态与事件游标。
 - `src-tauri/src/settings.rs`：设置 DTO、校验、运行状态应用/回滚和统一更新；`overlay.rs`：托盘、快捷键、位置、显示器校正与窗口操作。
 - `src-tauri/src/storage/mod.rs`：连接保护、迁移/备份、启动恢复及 StorageState；`repositories.rs`：类型化仓储；`storage/settings.rs`：设置事务、修订与旧 JSON 一次迁移。

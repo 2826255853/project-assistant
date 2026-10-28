@@ -8,6 +8,8 @@ use crate::ipc::ErrorCode;
 
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub(crate) use windows::delivery;
 
 #[cfg(windows)]
 pub use windows::{

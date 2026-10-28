@@ -1,4 +1,4 @@
-//! Phase 2 project DTOs. S2-03/04 wire register/list/get/remove; other types remain
+//! Phase 2 project DTOs. S2-03/04/05 wire register/list/get/remove/open/pick; other types remain
 //! future contracts until their implementation step is ready.
 use serde::{Deserialize, Serialize};
 
@@ -478,7 +478,7 @@ fn valid_uuid(value: &str) -> bool {
         })
 }
 
-fn valid_relative_path(value: &str) -> bool {
+pub(crate) fn valid_relative_path(value: &str) -> bool {
     if value.is_empty()
         || !bounded_text(value, MAX_RELATIVE_PATH_BYTES)
         || value.starts_with('\\')
@@ -514,12 +514,17 @@ fn valid_windows_component(value: &str) -> bool {
         .next()
         .unwrap_or_default()
         .to_ascii_uppercase();
-    !matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        && !["COM", "LPT"].iter().any(|prefix| {
-            base.strip_prefix(prefix).is_some_and(|suffix| {
-                matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-            })
+    !matches!(
+        base.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) && !["COM", "LPT"].iter().any(|prefix| {
+        base.strip_prefix(prefix).is_some_and(|suffix| {
+            matches!(
+                suffix,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
         })
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -540,6 +545,18 @@ pub struct RemoveResult {
 #[serde(rename_all = "camelCase")]
 pub struct OpenResult {
     pub system_accepted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum FilePickerResult {
+    Selected {
+        #[serde(rename = "relativePath")]
+        relative_path: String,
+    },
+    Cancelled {
+        outcome: &'static str,
+    },
 }
 
 #[cfg(test)]

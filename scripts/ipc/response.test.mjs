@@ -66,7 +66,7 @@ test("IPC permissions are limited to the local main window and explicit commands
   assert.ok(!config.permissions.some((p) => typeof p === "string" && /shell|fs:|allow-all/.test(p)));
 });
 
-test("S2-04 exposes register/list/get/remove to main with the matching manifest", async () => {
+test("S2-05 exposes seven project commands to main with the matching manifest", async () => {
   const { readFile } = await import("node:fs/promises");
   const read = path => readFile(new URL(path, import.meta.url), "utf8");
   const [contracts, rustCommands, manifest, mainCapability, overlayCapability, appState] = await Promise.all([
@@ -79,21 +79,20 @@ test("S2-04 exposes register/list/get/remove to main with the matching manifest"
   ]);
   const implemented = contracts.match(/export interface ImplementedCommandMap \{([\s\S]*?)^\}/m)?.[1];
   assert.ok(implemented, "implemented command map is present");
-  const implementedProjects = ["projects_add_from_picker", "projects_list", "project_get", "project_remove"];
+  const implementedProjects = ["projects_add_from_picker", "projects_list", "project_get", "project_remove", "project_open_directory", "project_open_file", "project_pick_file"];
   for (const command of implementedProjects) {
     assert.equal(implemented.includes(command), true);
     assert.equal(rustCommands.includes(command), true);
     assert.equal(manifest.includes(command), true);
     assert.ok(mainCapability.permissions.includes(`allow-${command.replaceAll("_", "-")}`));
   }
-  const planned = ["project_select",
-    "project_open_directory", "project_pick_file", "project_open_file", "project_git_summary"];
+  const planned = ["project_select", "project_git_summary"];
   for (const command of planned) {
     assert.equal(implemented.includes(command), false, `${command} is not implemented`);
     assert.equal(rustCommands.includes(command), false, `${command} is not registered in Rust`);
     assert.equal(manifest.includes(command), false, `${command} is not in the Tauri command manifest`);
   }
-  assert.equal(mainCapability.permissions.filter(permission => /project/i.test(permission)).length, 4);
+  assert.equal(mainCapability.permissions.filter(permission => /project/i.test(permission)).length, 7);
   assert.equal(overlayCapability.permissions.some(permission => /project/i.test(permission)), false);
   assert.match(appState, /PA_PROJECTS_NOT_IMPLEMENTED/);
 });

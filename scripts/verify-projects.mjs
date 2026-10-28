@@ -6,9 +6,9 @@ import { arch, cpus, release, totalmem, version } from "node:os";
 
 assert.equal(process.platform,"win32");
 assert.ok(process.env.npm_execpath,"Run via npm run verify:projects");
-const root=resolve(import.meta.dirname,".."), output=join(root,"artifacts","phase-2-4");
+const root=resolve(import.meta.dirname,".."), output=join(root,"artifacts","phase-2-5");
 await mkdir(output,{recursive:true});
-const report={step:"2.4",date:new Date().toISOString(),timezone:"Asia/Shanghai",passed:false,syntheticDataOnly:true,checks:[],desktops:[],limits:["Native picker mouse/keyboard flow remains manual acceptance in 2.9.","Usage selection/OS acceptance uses repository callbacks; active project is 2.8 and system delivery is 2.5.","Search P95 measures real WebView IPC and backend; project UI integration/rendering is 2.7.","No real tasks, keys or model requests."]};
+const report={step:"2.5",date:new Date().toISOString(),timezone:"Asia/Shanghai",passed:false,syntheticDataOnly:true,checks:[],desktops:[],limits:["Native picker mouse/keyboard flow remains manual acceptance in 2.9.","Real directory/text OS delivery and a synthetic configured PE editor are checked; acceptance does not prove application loading.","Final target requires rollback-only NTFS metadata protection and write-attribute permission. TxF-unavailable/ReFS/protected targets fail closed; no weaker fallback. ReFS was not tested.","Real preexisting attribute-handle/reparse mutation and rollback cases are tested. Timeout/access-denied mapping also uses adapter tests; timed-out delivery may complete later, never automatically retried.","Active project is 2.8; project UI/rendering is 2.7. Default-program windows may remain open.","No real tasks, keys or model requests."]};
 async function run(label,command,args) {
   console.log(label); let captured="";
   try {
@@ -41,4 +41,4 @@ try {
   report.passed=true;
 } catch(error) {report.error=String(error);console.error(report.error);process.exitCode=1;}
 finally {await writeFile(join(output,"report.json"),JSON.stringify(report,null,2)+"\n");}
-console.log(`Project storage/search verification: ${report.passed?"passed":"failed"}; artifacts/phase-2-4/report.json`);
+console.log(`Project storage/search/open verification: ${report.passed?"passed":"failed"}; artifacts/phase-2-5/report.json`);

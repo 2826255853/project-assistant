@@ -1,4 +1,5 @@
 use crate::ipc::ErrorCode;
+pub(crate) mod delivery;
 use std::{
     ffi::{OsStr, OsString, c_void},
     fs::File,

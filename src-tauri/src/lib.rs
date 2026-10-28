@@ -62,6 +62,99 @@ async fn projects_add_from_picker(
 }
 
 #[tauri::command]
+async fn project_open_directory(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<projects::OpenResult> {
+    let id = ipc::correlation_id();
+    let parsed =
+        project_request::<project_contract::ProjectIdRequest>(&window, request).and_then(|p| {
+            p.validate()?;
+            Ok(p)
+        });
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                projects::open(&a, &p.project_id, None, &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "project_open_directory", id, result)
+}
+
+#[tauri::command]
+async fn project_open_file(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<projects::OpenResult> {
+    let id = ipc::correlation_id();
+    let parsed =
+        project_request::<project_contract::OpenFileRequest>(&window, request).and_then(|p| {
+            p.validate()?;
+            Ok(p)
+        });
+    let result = match parsed {
+        Ok(p) => {
+            let a = app.clone();
+            let i = id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                projects::open(&a, &p.project_id, Some(&p.relative_path), &i)
+            })
+            .await
+            .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "project_open_file", id, result)
+}
+
+#[tauri::command]
+async fn project_pick_file(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<projects::FilePickerResult> {
+    let id = ipc::correlation_id();
+    let parsed =
+        project_request::<project_contract::ProjectIdRequest>(&window, request).and_then(|p| {
+            p.validate()?;
+            Ok(p)
+        });
+    let result = match parsed {
+        Ok(p) => {
+            #[cfg(windows)]
+            let owner = window
+                .hwnd()
+                .map(|h| h.0 as isize)
+                .map_err(|_| ipc::ErrorCode::ProjectPickerFailed);
+            #[cfg(not(windows))]
+            let owner = Err::<isize, _>(ipc::ErrorCode::ProjectPickerFailed);
+            match owner {
+                Ok(owner) => {
+                    let a = app.clone();
+                    let i = id.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        projects::pick_file(&a, owner, &p.project_id, &i)
+                    })
+                    .await
+                    .unwrap_or(Err(ipc::ErrorCode::InternalUnexpected))
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    };
+    complete(&app, "project_pick_file", id, result)
+}
+
+#[tauri::command]
 async fn projects_list(
     request: serde_json::Value,
     app: tauri::AppHandle,
@@ -899,6 +992,9 @@ pub fn run() {
             projects_add_from_picker,
             project_get,
             projects_list,
+            project_open_directory,
+            project_open_file,
+            project_pick_file,
             project_remove,
             desktop_initialize,
             app_get_status,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { verifyProjectSearchDesktop } from "./project-search-desktop.mjs";
+import { verifyProjectOpenDesktop } from "./project-open-desktop.mjs";
 
 export async function verifyProjectsDesktop({evaluate, until, report, debugPort, receive, cdp, mainUrl, fixtureDirectory}) {
   const invoke = (command, params = {}, apiVersion = 1) => `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, {request:${JSON.stringify({apiVersion, params})}})`;
@@ -26,6 +27,7 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
     ["project_remove", {projectId:id, expectedRevision:1, unknown:"x".repeat(8192)}, 1, "PA_VALIDATION_INPUT_TOO_LARGE"],
   ]) assert.equal((await call(command,params,version)).error.code,code);
   report.results.push("main 三个项目命令的版本、未知字段、根路径伪造、UUID、大小和修订校验通过");
+  await verifyProjectOpenDesktop({call, until, report, fixtureDirectory, id});
   await fixture("audit_fail_write");
   assert.equal((await call("project_remove",{projectId:id,expectedRevision:1})).error.code,"PA_AUDIT_WRITE_FAILED");
   assert.equal((await call("project_get",{projectId:id})).data.authorization,"granted");
@@ -33,6 +35,10 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
   await fixture("project_missing");
   view=(await call("project_get",{projectId:id})).data;
   assert.equal(view.availability,"missing"); assert.equal(view.authorization,"granted"); assert.equal(view.revision,2);
+  for (const command of ["project_open_directory","project_open_file","project_pick_file"]) {
+    const params={projectId:id,...(command==="project_open_file"?{relativePath:"keep.txt"}:{})};
+    assert.equal((await call(command,params)).error?.code,"PA_PROJECT_PATH_UNAVAILABLE");
+  }
   assert.equal((await call("project_remove",{projectId:id,expectedRevision:1})).error.code,"PA_PROJECT_CONFLICT_REVISION");
   assert.deepEqual((await call("project_remove",{projectId:id,expectedRevision:2})).data,{removed:true,retainedForHistory:true});
   assert.equal((await call("project_get",{projectId:id})).error.code,"PA_PROJECT_NOT_FOUND");
@@ -46,13 +52,13 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
     try {
       await new Promise((done,reject)=>{socket.addEventListener("open",done,{once:true});socket.addEventListener("error",reject,{once:true});});socket.addEventListener("message",receive);
       await until(()=>evaluate("Boolean(window.__TAURI_INTERNALS__)",socket),Boolean);
-      for(const command of ["projects_add_from_picker","projects_list","project_get","project_remove"]) assert.equal(await evaluate(`${invoke(command,{projectId:id,expectedRevision:2})}.then(()=>false,()=>true)`,socket),true);
+      for(const command of ["projects_add_from_picker","projects_list","project_get","project_remove","project_open_directory","project_open_file","project_pick_file"]) assert.equal(await evaluate(`${invoke(command,{projectId:id,expectedRevision:2})}.then(()=>false,()=>true)`,socket),true);
     } finally {socket.close();}
     if(close) await fixture(close);
   }
   await fixture("navigate_remote");
   await until(()=>evaluate("document.title"),title=>title==="IPC remote fixture");
-  for(const command of ["projects_add_from_picker","projects_list","project_get","project_remove"]) assert.equal(await evaluate(`${invoke(command,{projectId:id})}.then(()=>false,()=>true)`),true);
+  for(const command of ["projects_add_from_picker","projects_list","project_get","project_remove","project_open_directory","project_open_file","project_pick_file"]) assert.equal(await evaluate(`${invoke(command,{projectId:id})}.then(()=>false,()=>true)`),true);
   await cdp("Page.navigate",{url:mainUrl}); await until(()=>evaluate("Boolean(document.querySelector('.app-shell'))"),Boolean);
   report.results.push("overlay、未知本地窗口、远端 main 的项目 capability 拒绝通过；未自动打开原生选择器");
 }

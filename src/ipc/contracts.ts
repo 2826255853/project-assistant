@@ -114,6 +114,9 @@ export interface ImplementedCommandMap {
   projects_add_from_picker: CommandMap["projects_add_from_picker"];
   project_get: CommandMap["project_get"];
   projects_list: CommandMap["projects_list"];
+  project_open_directory: CommandMap["project_open_directory"];
+  project_open_file: CommandMap["project_open_file"];
+  project_pick_file: CommandMap["project_pick_file"];
   project_remove: CommandMap["project_remove"];
   providers_list: CommandMap["providers_list"];
   provider_save: CommandMap["provider_save"];
@@ -139,7 +142,7 @@ export interface ImplementedCommandMap {
 }
 type Assert<T extends true> = T;
 export type FutureProjectCommandsRemainUnimplemented = Assert<
-  Extract<keyof ImplementedCommandMap, "project_select" | "project_open_directory" | "project_open_file" | "project_pick_file" | "project_git_summary"> extends never ? true : false
+  Extract<keyof ImplementedCommandMap, "project_select" | "project_git_summary"> extends never ? true : false
 >;
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.

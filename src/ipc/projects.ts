@@ -124,7 +124,7 @@ function validRelativePath(value: string): boolean {
 function validWindowsComponent(value: string): boolean {
   if (/[<>"|?*]/.test(value) || /[. ]$/.test(value)) return false;
   const base = value.split(".", 1)[0]!.toUpperCase();
-  return !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(base);
+  return !/^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$/.test(base);
 }
 
 export const projectCommands: readonly (keyof CommandMap)[] = [

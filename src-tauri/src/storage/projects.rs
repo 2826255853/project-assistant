@@ -157,6 +157,10 @@ pub struct RemovedProject {
 }
 
 impl<'a> ProjectRepository<'a> {
+    pub(crate) fn authorized(&mut self, id: &str) -> Result<(u64, VerifiedDirectory), ErrorCode> {
+        let r = record(self.connection, id)?;
+        Ok((r.view.revision, verify(&r)?))
+    }
     pub(super) fn new(connection: &'a mut Connection) -> Self {
         Self { connection }
     }
@@ -267,7 +271,8 @@ impl<'a> ProjectRepository<'a> {
     }
     /// Serializes the explicit use with removal/reauthorization across processes.
     /// For SystemOpen, accept must return Ok only after the OS accepts delivery;
-    /// the later system adapter must also bind its final delivery to `verified`.
+    /// the system adapter binds delivery using name pins and a rollback-only
+    /// final-target metadata guard, including after the caller stops waiting.
     /// An OS side effect cannot be rolled back if the subsequent DB commit fails.
     pub fn record_usage<T>(
         &mut self,

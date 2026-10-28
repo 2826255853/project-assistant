@@ -328,7 +328,8 @@ try {
     assert.ok(files.length > 0);
     const productLogs = (await Promise.all(files.map(name=>readFile(resolve(logDirectory,name),"utf8")))).join("\n");
     assert.ok(productLogs.includes('"projects_list"'));
-    for (const sentinel of ["synthetic-project-private-path","synthetic-private-input","synthetic-private-path","无匹配哨兵"]) {
+    for (const command of ["project_open_directory","project_open_file","project_pick_file"]) assert.ok(productLogs.includes(JSON.stringify(command)));
+    for (const sentinel of ["synthetic-project-private-path","synthetic-private-input","synthetic-private-path","无匹配哨兵","文本 & (指定)","literal-argument-accepted","system-open-source-sentinel"]) {
       assert.ok(!processOutput.includes(sentinel));
       assert.ok(!productLogs.includes(sentinel));
     }

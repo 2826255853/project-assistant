@@ -1,10 +1,106 @@
-//! S2-03/04 main-window entry points. Selection/OS open/active state follow later.
+//! S2-03/04/05 main-window entry points. Active state follows in S2-08.
 use crate::{
     ipc::ErrorCode,
     project_contract::ProjectView,
     storage::{Storage, StorageState},
 };
 use tauri::Manager;
+
+pub use crate::project_contract::{FilePickerResult, OpenResult};
+
+pub fn open(
+    app: &tauri::AppHandle,
+    id: &str,
+    relative: Option<&str>,
+    correlation: &str,
+) -> Result<OpenResult, ErrorCode> {
+    #[cfg(windows)]
+    {
+        // Persist invalidation and publish even when an operation must fail.
+        let view = get(app, id, correlation)?;
+        with_repository(app, |storage| {
+            let editor = storage
+                .settings()
+                .read_view()?
+                .values
+                .into_iter()
+                .find_map(|v| {
+                    if let crate::settings::Change::Editor(editor) = v {
+                        editor
+                    } else {
+                        None
+                    }
+                });
+            storage.projects().record_usage(
+                id,
+                view.revision,
+                crate::storage::projects::UsageSource::SystemOpen,
+                |verified| {
+                    let root = crate::project_paths::delivery::directory(verified)?;
+                    let target = relative
+                        .map(|r| crate::project_paths::delivery::file(&root, r))
+                        .transpose()?;
+                    crate::project_paths::delivery::open(root, target, editor)
+                },
+            )
+        })?;
+        crate::app_state::publish(app, correlation.into());
+        Ok(OpenResult {
+            system_accepted: true,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, id, relative, correlation);
+        Err(ErrorCode::ProjectOpenRejected)
+    }
+}
+
+pub fn pick_file(
+    app: &tauri::AppHandle,
+    owner: isize,
+    id: &str,
+    correlation: &str,
+) -> Result<FilePickerResult, ErrorCode> {
+    #[cfg(windows)]
+    {
+        let prepared = with_repository(app, |storage| {
+            let (revision, verified) = storage.projects().authorized(id)?;
+            Ok((
+                revision,
+                crate::project_paths::delivery::directory(&verified)?,
+            ))
+        });
+        let (revision, pinned) = match prepared {
+            Ok(prepared) => prepared,
+            Err(code) => {
+                get(app, id, correlation)?;
+                return Err(code);
+            }
+        };
+        // Native UI is outside the database mutex/transaction; cancel writes no usage.
+        let Some(relative_path) = crate::project_paths::delivery::pick(owner, &pinned)? else {
+            return Ok(FilePickerResult::Cancelled {
+                outcome: "cancelled",
+            });
+        };
+        with_repository(app, |storage| {
+            let (current, verified) = storage.projects().authorized(id)?;
+            if current != revision {
+                return Err(ErrorCode::ProjectConflictRevision);
+            }
+            let root = crate::project_paths::delivery::directory(&verified)?;
+            let _file = crate::project_paths::delivery::file(&root, &relative_path)?;
+            Ok(())
+        })?;
+        Ok(FilePickerResult::Selected { relative_path })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, owner, id, correlation);
+        Err(ErrorCode::ProjectPickerFailed)
+    }
+}
 
 pub fn list(
     app: &tauri::AppHandle,
