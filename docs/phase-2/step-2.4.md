@@ -26,7 +26,7 @@
 - 服务端生成的游标绑定归一化查询、排序和可见 `ProjectView` 数据指纹及最后一行 UUID。游标不包含路径或查询文本；客户端只能原样回传。重复读取同一数据得到同一顺序；查询、排序、名称、使用时间、可用性或可见行变化后，续页返回 `PA_PROJECT_CONFLICT_REVISION`，调用方应从第一页重新读取。格式损坏为 `PA_IPC_INVALID_REQUEST`。游标不是授权令牌，不承诺跨变更保留旧快照。
 - IPC v1 完整请求最多 8 KiB；query 最多 256 UTF-8 字节、cursor 最多 512；拒绝未知字段、显式 null、错误类型、控制字符、空 cursor、非整数/越界 limit。长度错误用 `PA_VALIDATION_INPUT_TOO_LARGE`，其余固定输入错误；SQLite 错误用既有 `PA_SETTINGS_STORAGE_FAILED`，不传原始异常或 SQL。
 
-`ProjectSearchController` 每次输入立即增加查询代次并停止等待旧请求；即使 native 工作仍完成，旧成功/错误/下一页均不能更新新查询。新输入清空旧页面，明确发布 loading/空结果/错误状态；同一查询下一页串行。调用 `search(text,true)` 处理 IME 组合输入，只作本地失效，组合结束后 `search(text)` 才发送；`dispose()` 阻止迟到响应。未来页面切换排序或收到失效通知时重新 `search(currentQuery)`；游标冲突保留固定错误供页面显式处理，不自动重放变更。本步没有项目页面控件，IME 和竞态为控制器自动测试，2.7 还须真实控件点验。
+`ProjectSearchController` 每次输入立即增加查询代次并停止等待旧请求；即使 native 工作仍完成，旧成功/错误/下一页均不能更新新查询。新输入清空旧页面，明确发布 loading/空结果/错误状态；同一查询下一页串行。调用 `search(text,true)` 处理 IME 组合输入，只作本地失效，组合结束后 `search(text)` 才发送；`dispose()` 阻止迟到响应。项目页面已在 2.7 复用该控制器，页面切换排序或收到失效通知时重新 `search(currentQuery)`；游标冲突保留固定错误供页面显式处理，不自动重放变更。2.7 built/dev 桌面已验证搜索框、组合态提示和控件响应；真实设备中文输入仍留 2.9。
 
 匹配样例（合成元数据）：
 

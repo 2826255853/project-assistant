@@ -1,8 +1,10 @@
 # 本机项目助手 · 桌面基础
 
-阶段 2 步骤 2.6（S2-06）已于 2026-10-28 接入 main-only 正式 Rust Git 摘要服务：安全发现 Git、授权目录复核、固定只读参数、受控环境、有界进程与输出、5 秒内存缓存和失败降级。`npm run verify:projects` 通过：156 项 Rust、33 项 IPC、15 项离线 Codex、52 项存储及 built/dev 真实桌面；覆盖空仓库、分支、detached HEAD、工作区变更、非仓库、缺失 Git、超时、异常输出和缓存刷新。报告 `artifacts/phase-2-6/report.json`。本机 Windows x64 与标准系统 Git 安装范围通过；其他 Windows 版本、ARM64、缺少 Git 的干净机器和用户级/自定义 Git 安装未实测。详细边界见 [步骤 2.6](docs/phase-2/step-2.6.md)。
+阶段 2 步骤 2.6（S2-06）已于 2026-10-28 接入 main-only 正式 Rust Git 摘要服务：安全发现 Git、授权目录复核、固定只读参数、受控环境、有界进程与输出、5 秒内存缓存和失败降级。其当轮验收报告 `artifacts/phase-2-6/report.json` 通过 156 项 Rust、33 项 IPC、15 项离线 Codex、52 项存储及 built/dev 桌面，覆盖空仓库、分支、detached HEAD、工作区变更、非仓库、缺失 Git、超时、异常输出和缓存刷新。该轮页面尚未接入，现由 2.7 完成。本机 Windows x64 与标准系统 Git 安装范围通过；其他 Windows 版本、ARM64、缺少 Git 的干净机器和用户级/自定义 Git 安装未实测。详细边界见 [步骤 2.6](docs/phase-2/step-2.6.md)。
 
-步骤 2.5（S2-05）实现授权目录/文件系统打开、受限文件选择器和结构化编辑器适配，main 新增 `project_open_directory/project_open_file/project_pick_file`。其 NTFS 打开服务、默认程序与真实合成编辑器及属性句柄/重解析点攻击证据见 [步骤 2.5](docs/phase-2/step-2.5.md)。本步**有条件通过**：最终目标必须取得 NTFS/TxF 元数据保护及属性写权限，不支持时拒绝打开，不降级；ReFS 打开和选择器人工点验未实测。只声明系统接受交付，不代表外部程序加载完成。项目页面、活动项目及人工点验仍按 2.7–2.9 推进，M2 未通过。
+步骤 2.7（S2-07）已**有条件通过**：项目页面和首页近期入口完成登记、搜索/中文输入法组合、排序、键盘导航、目录/文件打开、Git 降级、移除确认与固定错误反馈；`npm run verify:projects` 已通过 built/dev 页面闭环，详情见 [步骤 2.7](docs/phase-2/step-2.7.md)。原生选择器物理点验、活动项目和阶段完整回归仍分别留待 2.9/2.8，M2 未通过。
+
+步骤 2.5（S2-05）实现授权目录/文件系统打开、受限文件选择器和结构化编辑器适配，main 新增 `project_open_directory/project_open_file/project_pick_file`。其 NTFS 打开服务、默认程序与真实合成编辑器及属性句柄/重解析点攻击证据见 [步骤 2.5](docs/phase-2/step-2.5.md)。本步**有条件通过**：最终目标必须取得 NTFS/TxF 元数据保护及属性写权限，不支持时拒绝打开，不降级；ReFS 打开和选择器人工点验未实测。只声明系统接受交付，不代表外部程序加载完成。活动项目及阶段完整回归仍按 2.8–2.9 推进，M2 未通过。
 
 2.4 的项目列表、全局排序、稳定分页、中文/路径模糊搜索和响应代次/IME 控制器保持；其历史搜索性能与测量边界见 [步骤 2.4](docs/phase-2/step-2.4.md)，最新回归包含在上述入口。仓储/身份和 schema v5 保持，详见 [步骤 2.3](docs/phase-2/step-2.3.md)、[项目契约](docs/phase-2/step-2.1.md) 和 [计划第 22 章](计划文档.txt)。
 

@@ -41,6 +41,8 @@ test("project operation responses and inputs are strict and path-bounded", () =>
   assert.equal(isProjectFilePickerResult({ relativePath: "src/trailing. " }), false);
   assert.equal(isProjectListParams({}), true);
   assert.equal(isProjectListParams({ query: "中文", limit: 50 }), true);
+  assert.equal(isProjectListParams({ sort: "recent", limit: 5 }), true);
+  assert.equal(isProjectListParams({ sort: "invalid" }), false);
   assert.equal(isProjectListParams({ limit: 0 }), false);
   assert.equal(isProjectListParams({ query: "bad\u0000input" }), false);
   assert.equal(isProjectFileParams({ projectId, relativePath: "src/main.ts" }), true);

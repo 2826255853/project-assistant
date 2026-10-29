@@ -21,7 +21,7 @@ export async function verifyProjectSearchDesktop({evaluate, call, fixture, repor
     cursor=page.nextCursor;
   } while(cursor);
   assert.equal(seen.size,1000);
-  for(const params of [{query:null},{cursor:null},{limit:null},{limit:0},{limit:101},{limit:1.5},{query:123},{sort:"name"},{cursor:"forged"},{query:"bad\nquery"}]) {
+  for(const params of [{query:null},{cursor:null},{limit:null},{limit:0},{limit:101},{limit:1.5},{query:123},{sort:"invalid"},{cursor:"forged"},{query:"bad\nquery"}]) {
     assert.equal((await call("projects_list",params)).error.code,"PA_IPC_INVALID_REQUEST");
   }
   assert.equal((await call("projects_list",{query:"中".repeat(86)})).error.code,"PA_VALIDATION_INPUT_TOO_LARGE");
@@ -32,6 +32,10 @@ export async function verifyProjectSearchDesktop({evaluate, call, fixture, repor
   assert.equal((await call("settings_update",{scope:"global",expectedRevision:settings.revision,changes:[{key:"project_sort",value:"name"}]})).status,"ok");
   assert.equal((await call("projects_list",{limit:1,cursor:previous.nextCursor})).error.code,"PA_PROJECT_CONFLICT_REVISION");
   assert.equal((await list({limit:1})).items[0].name,"Synthetic-0004");
+  const homeRecent = await list({limit:5,sort:"recent"});
+  assert.equal(homeRecent.items[0].lastUsedAt, Math.max(...homeRecent.items.map(project=>project.lastUsedAt)));
+  assert.equal(homeRecent.items.length,5);
+  assert.equal((await list({limit:1,sort:"recent"})).items[0].id,homeRecent.items[0].id);
   // Timer lives in the real WebView, including invoke, Rust/SQLite, transport
   // deserialization and JS result checks. No CDP round-trip in the measurement.
   const performance = await evaluate(`(async()=>{

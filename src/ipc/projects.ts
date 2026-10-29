@@ -105,10 +105,11 @@ export function isProjectFilePickerResult(value: unknown): value is CommandMap["
 }
 
 export function isProjectListParams(value: unknown): value is CommandMap["projects_list"]["params"] {
-  if (!isRecord(value) || Object.keys(value).some(key => !["query", "cursor", "limit"].includes(key))) return false;
+  if (!isRecord(value) || Object.keys(value).some(key => !["query", "cursor", "limit", "sort"].includes(key))) return false;
   if ("query" in value && (!boundedText(value.query, 256) || /[\u0000-\u001f]/.test(value.query))) return false;
   if ("cursor" in value && (!boundedText(value.cursor, 512) || value.cursor.length === 0)) return false;
-  return !("limit" in value) || (Number.isSafeInteger(value.limit) && Number(value.limit) >= 1 && Number(value.limit) <= 100);
+  if ("limit" in value && !(Number.isSafeInteger(value.limit) && Number(value.limit) >= 1 && Number(value.limit) <= 100)) return false;
+  return !("sort" in value) || value.sort === "recent" || value.sort === "name";
 }
 
 export function isProjectFileParams(value: unknown): value is CommandMap["project_open_file"]["params"] {

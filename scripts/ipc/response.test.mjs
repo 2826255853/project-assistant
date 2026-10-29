@@ -94,5 +94,6 @@ test("S2-06 exposes eight project commands to main with the matching manifest", 
   }
   assert.equal(mainCapability.permissions.filter(permission => /project/i.test(permission)).length, 8);
   assert.equal(overlayCapability.permissions.some(permission => /project/i.test(permission)), false);
-  assert.match(appState, /PA_PROJECTS_NOT_IMPLEMENTED/);
+  assert.match(appState, /service.id == "storage"/);
+  assert.match(appState, /projects.state = storage_health\.0/);
 });

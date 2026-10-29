@@ -94,6 +94,18 @@ pub fn pick_file(
 ) -> Result<FilePickerResult, ErrorCode> {
     #[cfg(windows)]
     {
+        #[cfg(debug_assertions)]
+        if picker_fixture_enabled() {
+            let (revision, verified) =
+                with_repository(app, |storage| storage.projects().authorized(id))?;
+            let root = crate::project_paths::delivery::directory(&verified)?;
+            let relative_path = "selected-through-ui.txt";
+            let _file = crate::project_paths::delivery::file(&root, relative_path)?;
+            let _ = revision;
+            return Ok(FilePickerResult::Selected {
+                relative_path: relative_path.into(),
+            });
+        }
         let prepared = with_repository(app, |storage| {
             let (revision, verified) = storage.projects().authorized(id)?;
             Ok((
@@ -130,6 +142,12 @@ pub fn pick_file(
         let _ = (app, owner, id, correlation);
         Err(ErrorCode::ProjectPickerFailed)
     }
+}
+
+#[cfg(all(debug_assertions, windows))]
+fn picker_fixture_enabled() -> bool {
+    std::env::var("PA_IPC_VERIFY").as_deref() == Ok("1")
+        && std::env::var("PA_PROJECT_PICKER_FIXTURE").as_deref() == Ok("1")
 }
 
 pub fn list(
@@ -170,6 +188,10 @@ pub fn add(
 ) -> Result<PickerResult, ErrorCode> {
     #[cfg(windows)]
     {
+        #[cfg(debug_assertions)]
+        if picker_fixture_enabled() {
+            return add_fixture(app, correlation);
+        }
         // No database lock while the native modal picker is visible.
         let candidate = crate::project_paths::choose_project_directory(owner)?;
         let Some(candidate) = candidate else {
@@ -187,6 +209,36 @@ pub fn add(
         let _ = (app, owner, correlation);
         Err(ErrorCode::ProjectPickerFailed)
     }
+}
+
+/// Synthetic picker result used only by the isolated debug desktop acceptance flow.
+#[cfg(all(debug_assertions, windows))]
+pub(crate) fn add_fixture(
+    app: &tauri::AppHandle,
+    correlation: &str,
+) -> Result<PickerResult, ErrorCode> {
+    use std::path::PathBuf;
+    let directory = std::env::var_os("PA_OVERLAY_VERIFY_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or(ErrorCode::PermissionDenied)?;
+    let project = with_repository(app, |storage| {
+        if storage.path.parent() != Some(directory.as_path()) {
+            return Err(ErrorCode::PermissionDenied);
+        }
+        let source = directory.join("project-added-through-ui");
+        std::fs::create_dir_all(&source).map_err(|_| ErrorCode::ProjectPathUnavailable)?;
+        std::fs::write(
+            source.join("selected-through-ui.txt"),
+            "synthetic file-picker acceptance",
+        )
+        .map_err(|_| ErrorCode::ProjectPathUnavailable)?;
+        let candidate = crate::project_paths::authorize_fixture(&source)?;
+        storage.projects().register(Some(candidate), correlation)
+    })?
+    .ok_or(ErrorCode::InternalUnexpected)?;
+    crate::app_state::publish(app, correlation.into());
+    Ok(PickerResult::Registered { project })
 }
 
 pub fn get(app: &tauri::AppHandle, id: &str, correlation: &str) -> Result<ProjectView, ErrorCode> {

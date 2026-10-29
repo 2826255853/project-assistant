@@ -8,6 +8,7 @@ fn request(query: &str, limit: u16, cursor: Option<String>) -> ListRequest {
         query: Some(query.into()),
         limit: Some(limit),
         cursor,
+        sort: None,
     }
 }
 
@@ -91,6 +92,47 @@ fn stable_recent_and_name_paging_visit_every_record_once() {
 }
 
 #[test]
+fn explicit_recent_sort_is_independent_of_global_name_preference() {
+    let f = tests::Fixture::new();
+    let mut db = f.db();
+    search_fixture::seed(&mut db.connection).unwrap();
+    db.connection.execute(
+        "INSERT INTO settings(id,scope,key,value_text,revision,updated_at) VALUES('sort','global','project_sort','name',1,1) ON CONFLICT(key) WHERE scope='global' DO UPDATE SET value_text='name'",
+        [],
+    ).unwrap();
+    let page = db
+        .projects()
+        .list(&ListRequest {
+            query: Some(String::new()),
+            cursor: None,
+            limit: Some(5),
+            sort: Some("recent".into()),
+        })
+        .unwrap();
+    assert_eq!(page.items.len(), 5);
+    assert!(
+        page.items
+            .iter()
+            .all(|project| project.last_used_at.is_some())
+    );
+    assert!(
+        page.items
+            .windows(2)
+            .all(|pair| pair[0].last_used_at >= pair[1].last_used_at)
+    );
+    assert_eq!(
+        page.items[0].last_used_at,
+        Some(
+            page.items
+                .iter()
+                .filter_map(|project| project.last_used_at)
+                .max()
+                .unwrap()
+        )
+    );
+}
+
+#[test]
 fn cursors_reject_changes_tampering_and_cross_query_use() {
     let f = tests::Fixture::new();
     let mut db = f.db();
@@ -168,11 +210,17 @@ fn request_limits_default_page_and_null_types_are_strict() {
         r#"{"query":null}"#,
         r#"{"limit":null}"#,
         r#"{"cursor":null}"#,
-        r#"{"sort":"name"}"#,
+        r#"{"sort":null}"#,
         r#"{"limit":1.5}"#,
     ] {
         assert!(serde_json::from_str::<ListRequest>(raw).is_err());
     }
+    assert!(
+        serde_json::from_str::<ListRequest>(r#"{"sort":"alphabetical"}"#)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
     assert_eq!(
         db.projects().list(&request("", 0, None)),
         Err(ErrorCode::InvalidRequest)

@@ -348,6 +348,8 @@ pub struct ListRequest {
     pub cursor: Option<String>,
     #[serde(default, deserialize_with = "present_value")]
     pub limit: Option<u16>,
+    #[serde(default, deserialize_with = "present_value")]
+    pub sort: Option<String>,
 }
 
 fn present_value<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -383,6 +385,13 @@ impl ListRequest {
         if self
             .limit
             .is_some_and(|value| !(1..=MAX_PAGE_SIZE).contains(&value))
+        {
+            return Err(crate::ipc::ErrorCode::InvalidRequest);
+        }
+        if self
+            .sort
+            .as_deref()
+            .is_some_and(|value| value != "recent" && value != "name")
         {
             return Err(crate::ipc::ErrorCode::InvalidRequest);
         }
@@ -666,6 +675,7 @@ mod tests {
                 query: Some(String::new()),
                 cursor: None,
                 limit: None,
+                sort: None,
             }
             .validate()
             .is_ok()
@@ -675,6 +685,7 @@ mod tests {
                 query: Some("x".repeat(MAX_QUERY_BYTES + 1)),
                 cursor: None,
                 limit: None,
+                sort: None,
             }
             .validate(),
             Err(crate::ipc::ErrorCode::InputTooLarge)
@@ -684,6 +695,7 @@ mod tests {
                 query: None,
                 cursor: None,
                 limit: Some(0),
+                sort: None,
             }
             .validate()
             .is_err()
@@ -691,6 +703,26 @@ mod tests {
         assert!(
             ProjectIdRequest {
                 project_id: "not-a-uuid".into(),
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ListRequest {
+                query: None,
+                cursor: None,
+                limit: None,
+                sort: Some("recent".into())
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            ListRequest {
+                query: None,
+                cursor: None,
+                limit: None,
+                sort: Some("invalid".into())
             }
             .validate()
             .is_err()

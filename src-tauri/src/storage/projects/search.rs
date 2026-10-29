@@ -77,11 +77,16 @@ impl ProjectRepository<'_> {
         let setting: Option<(Option<String>, Option<i64>)> = tx.query_row(
             "SELECT value_text,value_integer FROM settings WHERE scope='global' AND key='project_sort'",
             [], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(sql)?;
-        let recent = match setting {
-            None => true,
-            Some((Some(value), None)) if value == "recent" => true,
-            Some((Some(value), None)) if value == "name" => false,
-            _ => return Err(ErrorCode::SettingsCorrupt),
+        let recent = match request.sort.as_deref() {
+            Some("recent") => true,
+            Some("name") => false,
+            Some(_) => return Err(ErrorCode::InvalidRequest),
+            None => match setting {
+                None => true,
+                Some((Some(value), None)) if value == "recent" => true,
+                Some((Some(value), None)) if value == "name" => false,
+                _ => return Err(ErrorCode::SettingsCorrupt),
+            },
         };
         let after_key = after
             .map(|(_, id)| {

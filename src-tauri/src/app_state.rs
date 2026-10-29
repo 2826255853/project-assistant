@@ -181,6 +181,19 @@ pub fn status(app: &tauri::AppHandle, private_draft: bool) -> AppStatus {
     let data = state.0.lock().unwrap();
     let mut result = data.snapshot(overlay::view(app), private_draft, storage_state(app));
     if !app.state::<crate::desktop::DesktopState>().phase0 {
+        let storage_health = result
+            .services
+            .iter()
+            .find(|service| service.id == "storage")
+            .map(|service| (service.state, service.reason_code))
+            .unwrap_or(("unavailable", Some("PA_STORAGE_UNEXPECTED")));
+        let projects = result
+            .services
+            .iter_mut()
+            .find(|service| service.id == "projects")
+            .unwrap();
+        projects.state = storage_health.0;
+        projects.reason_code = storage_health.1;
         let provider = result
             .services
             .iter_mut()

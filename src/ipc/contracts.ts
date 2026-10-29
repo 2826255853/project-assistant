@@ -89,6 +89,7 @@ export interface ProjectView {
   createdAt: number; lastUsedAt: number | null;
 }
 export interface ProjectListPage { items: ProjectView[]; nextCursor: string | null }
+export type ProjectSort = "recent" | "name";
 export interface ActiveProject { projectId: string; name: string }
 export type GitSummary =
   | { state: "available"; isRepository: true; branch: string | null; detached: boolean; workingTreeModified: boolean; refreshedAt: number }
@@ -172,7 +173,7 @@ export interface CommandMap {
   approval_decide: { params: { approvalId: string; taskId: string; operationFingerprint: string; decision: "approve" | "deny" }; data: { decision: "approved" | "denied" | "expired" } };
   // Planned project commands: types are not a runtime allow-list.
   projects_add_from_picker: { params: Record<string, never>; data: { outcome: "registered"; project: ProjectView } | { outcome: "cancelled" } };
-  projects_list: { params: { query?: string; cursor?: string; limit?: number }; data: ProjectListPage };
+  projects_list: { params: { query?: string; cursor?: string; limit?: number; sort?: ProjectSort }; data: ProjectListPage };
   project_get: { params: { projectId: string }; data: ProjectView };
   project_select: { params: { projectId: string }; data: { activeProject: ActiveProject } };
   project_remove: { params: { projectId: string; expectedRevision: number }; data: { removed: true; retainedForHistory: boolean } };

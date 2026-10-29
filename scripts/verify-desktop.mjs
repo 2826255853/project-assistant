@@ -43,6 +43,7 @@ const env = {
   PA_DESKTOP_MODE: shell ? "normal" : "phase0",
   PA_SHELL_FAIL_ONCE: scenario === "shell-error" ? "1" : "0",
   PA_IPC_VERIFY: shell ? "1" : "0",
+  PA_PROJECT_PICKER_FIXTURE: scenario === "projects" ? "1" : "0",
   PA_OVERLAY_VERIFY_DIR: overlayFixtureDirectory,
   ...(scenario === "projects" ? { PA_LOG_VERIFY_DIR: resolve(overlayFixtureDirectory, "logs") } : {}),
   PA_IPC_REMOTE_URL: ["ipc", "credentials", "providers", "projects"].includes(scenario) ? `http://127.0.0.1:${remote.address().port}/` : "",
@@ -150,14 +151,16 @@ try {
     await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
     await until(() => evaluate("document.querySelector('.main-area')?.dataset.page"), (page) => page === "projects");
     assert.equal(await evaluate("document.activeElement.id"), "page-heading");
-    assert.match(await evaluate("document.querySelector('[data-testid=state-empty]').textContent"), /尚未启用/);
-    report.results.push("键盘 Enter 可打开项目入口，焦点移至标题并显示明确空状态");
+    assert.match(await evaluate("document.querySelector('[data-testid=state-empty]').textContent"), /还没有登记项目/);
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=project-add]'))"), true);
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=project-search]'))"), true);
+    report.results.push("键盘 Enter 可打开项目工作区，焦点移至标题并显示可操作空状态、添加与搜索控件");
     for (const page of ["ai", "settings", "diagnostics", "home"]) {
       await evaluate(`document.querySelector('.nav-item[data-page=${page}]').click()`);
       await until(() => evaluate("document.querySelector('.main-area')?.dataset.page"), (current) => current === page);
       assert.equal(await evaluate("document.querySelector('nav [aria-current=page]').dataset.page"), page);
       assert.equal(await evaluate("document.activeElement.id"), "page-heading");
-      if (page === "projects") assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=state-unavailable]'))"), true);
+      if (page === "projects") assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=project-add]'))"), true);
       if (page === "ai") {
         assert.equal(await evaluate("Boolean(document.querySelector('.ai-config-page [data-testid=ai-config-status]'))"), true);
       }
@@ -329,7 +332,7 @@ try {
     const productLogs = (await Promise.all(files.map(name=>readFile(resolve(logDirectory,name),"utf8")))).join("\n");
     assert.ok(productLogs.includes('"projects_list"'));
     for (const command of ["project_open_directory","project_open_file","project_pick_file"]) assert.ok(productLogs.includes(JSON.stringify(command)));
-    for (const sentinel of ["synthetic-project-private-path","synthetic-private-input","synthetic-private-path","无匹配哨兵","文本 & (指定)","literal-argument-accepted","system-open-source-sentinel"]) {
+    for (const sentinel of ["synthetic-project-private-path","project-added-through-ui","selected-through-ui.txt","synthetic-private-input","synthetic-private-path","无匹配哨兵","文本 & (指定)","literal-argument-accepted","system-open-source-sentinel"]) {
       assert.ok(!processOutput.includes(sentinel));
       assert.ok(!productLogs.includes(sentinel));
     }
