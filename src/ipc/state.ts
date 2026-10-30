@@ -1,4 +1,4 @@
-import type { ActiveContext, AppEvent, AppStatus, OverlayView } from "./contracts.ts";
+import type { ActiveContext, ActiveProject, AppEvent, AppStatus, OverlayView } from "./contracts.ts";
 import { isRecord } from "./response.ts";
 import { isConfigState } from "./providers.ts";
 import { errorForCode } from "./errors.ts";
@@ -20,13 +20,16 @@ function isContext(value: unknown): value is ActiveContext {
 export function isAppStatus(value: unknown): value is AppStatus {
   const ids = ["desktop", "ipc", "events", "overlay", "storage", "settings", "logging", "credentials", "providers", "codex", "projects", "tasks"];
   if (!isRecord(value) || value.apiVersion !== 1 || !cursorId(value.streamId) || !counter(value.sequence) || !isConfigState(value.configState) ||
-    value.taskStatus !== "idle" || !isOverlayView(value.overlay) || !(value.activeContext === null || isContext(value.activeContext)) ||
+    value.taskStatus !== "idle" || !isOverlayView(value.overlay) || !(value.activeContext === null || isContext(value.activeContext)) || !(value.activeProject === null || isActiveProject(value.activeProject)) ||
     !Array.isArray(value.services) || value.services.length !== ids.length || !isRecord(value.ccSwitch)) return false;
   const cc = value.ccSwitch;
   return cc.management === "user_manual" && cc.integration === "disabled" && cc.readSupported === false && cc.switchSupported === false &&
     new Set(value.services.map(s => isRecord(s) ? s.id : null)).size === ids.length && value.services.every(s => isRecord(s) && ids.includes(String(s.id)) &&
       ["ready", "unavailable", "degraded"].includes(String(s.state)) &&
       (s.state === "ready" ? s.reasonCode === null : typeof s.reasonCode === "string" && /^PA_[A-Z0-9_]{1,96}$/.test(s.reasonCode)));
+}
+function isActiveProject(value: unknown): value is ActiveProject {
+  return isRecord(value) && typeof value.projectId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.projectId) && typeof value.name === "string" && bytes(value.name) > 0 && bytes(value.name) <= 1024 && !/[\u0000-\u001f]/.test(value.name);
 }
 export function isStateEvent(value: unknown): value is AppEvent {
   return isRecord(value) && value.apiVersion === 1 && cursorId(value.streamId) && counter(value.sequence) && value.sequence > 0 &&

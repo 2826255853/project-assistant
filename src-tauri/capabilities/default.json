@@ -12,6 +12,7 @@
     "allow-project-open-file",
     "allow-project-pick-file",
     "allow-project-remove",
+    "allow-project-select",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-get-all-windows",

@@ -120,6 +120,98 @@ fn usage_requires_valid_identity_revision_and_successful_acceptance() {
 }
 
 #[test]
+fn project_settings_read_requires_a_grant_marks_each_source_and_audits_without_usage() {
+    let f = Fixture::new();
+    let mut db = f.db();
+    let project = f.register(&mut db);
+    let first = db
+        .projects()
+        .project_settings(&project.id, &correlation_id())
+        .unwrap();
+    assert_eq!(first.project_id, project.id);
+    assert_eq!(first.revision, 1);
+    assert_eq!(first.global_revision, 1);
+    assert_eq!(first.values.len(), 7);
+    assert!(
+        first
+            .values
+            .iter()
+            .all(|setting| { setting.source == crate::project_contract::SettingSource::Global })
+    );
+    assert_eq!(count(&db, "project_usage"), 0);
+
+    db.connection
+        .execute(
+            "INSERT INTO settings(id,scope,project_id,key,value_text,revision,updated_at) VALUES('project-search','project',?1,'search_engine','google',2,?2)",
+            rusqlite::params![project.id, crate::storage::now_ms()],
+        )
+        .unwrap();
+    let next = db
+        .projects()
+        .project_settings(&project.id, &correlation_id())
+        .unwrap();
+    assert_eq!(next.revision, 2);
+    let search = next
+        .values
+        .iter()
+        .find(|setting| {
+            matches!(
+                setting.setting,
+                crate::project_contract::ProjectSettingKind::SearchEngine(_)
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        search.source,
+        crate::project_contract::SettingSource::Project
+    );
+    assert_eq!(
+        search.setting,
+        crate::project_contract::ProjectSettingKind::SearchEngine(
+            crate::project_contract::SearchEngine::Google
+        )
+    );
+    let reads: i64 = db
+        .connection
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE event_kind='config_read' AND project_id=?1",
+            [&project.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reads, 2);
+    assert_eq!(count(&db, "project_usage"), 0);
+    f.unchanged();
+}
+
+#[test]
+fn project_settings_read_audit_failure_returns_no_snapshot() {
+    let f = Fixture::new();
+    let mut db = f.db();
+    let project = f.register(&mut db);
+    db.connection
+        .execute_batch("CREATE TRIGGER reject_config_read BEFORE INSERT ON audit_events WHEN NEW.event_kind='config_read' BEGIN SELECT RAISE(ABORT,'synthetic-private-setting'); END;")
+        .unwrap();
+    assert_eq!(
+        db.projects()
+            .project_settings(&project.id, &correlation_id()),
+        Err(ErrorCode::AuditWriteFailed)
+    );
+    assert_eq!(count(&db, "project_usage"), 0);
+    assert_eq!(
+        db.connection
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_kind='config_read'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    f.unchanged();
+}
+
+#[test]
 fn grant_remove_and_usage_sql_audit_failures_roll_back() {
     let f = Fixture::new();
     let mut db = f.db();

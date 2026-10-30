@@ -48,7 +48,7 @@ pub fn open(
     {
         // Persist invalidation and publish even when an operation must fail.
         let view = get(app, id, correlation)?;
-        with_repository(app, |storage| {
+        let result = with_repository(app, |storage| {
             let editor = storage
                 .settings()
                 .read_view()?
@@ -73,7 +73,11 @@ pub fn open(
                     crate::project_paths::delivery::open(root, target, editor)
                 },
             )
-        })?;
+        });
+        if let Err(code) = result {
+            reconcile_path_failure(app, id, correlation, code);
+            return Err(code);
+        }
         crate::app_state::publish(app, correlation.into());
         Ok(OpenResult {
             system_accepted: true,
@@ -126,7 +130,7 @@ pub fn pick_file(
                 outcome: "cancelled",
             });
         };
-        with_repository(app, |storage| {
+        let result = with_repository(app, |storage| {
             let (current, verified) = storage.projects().authorized(id)?;
             if current != revision {
                 return Err(ErrorCode::ProjectConflictRevision);
@@ -134,7 +138,11 @@ pub fn pick_file(
             let root = crate::project_paths::delivery::directory(&verified)?;
             let _file = crate::project_paths::delivery::file(&root, &relative_path)?;
             Ok(())
-        })?;
+        });
+        if let Err(code) = result {
+            reconcile_path_failure(app, id, correlation, code);
+            return Err(code);
+        }
         Ok(FilePickerResult::Selected { relative_path })
     }
     #[cfg(not(windows))]
@@ -179,6 +187,19 @@ pub(crate) fn with_repository<T>(
     app.state::<StorageState>()
         .with_storage(|storage| Ok(f(storage)))
         .map_err(|_| ErrorCode::SettingsStorageFailed)?
+}
+
+#[cfg(windows)]
+fn reconcile_path_failure(app: &tauri::AppHandle, id: &str, correlation: &str, code: ErrorCode) {
+    if matches!(
+        code,
+        ErrorCode::ProjectNotFound
+            | ErrorCode::ProjectPathUnavailable
+            | ErrorCode::ProjectPathChanged
+            | ErrorCode::ProjectAccessDenied
+    ) {
+        let _ = get(app, id, correlation);
+    }
 }
 
 pub fn add(
@@ -244,13 +265,61 @@ pub(crate) fn add_fixture(
 pub fn get(app: &tauri::AppHandle, id: &str, correlation: &str) -> Result<ProjectView, ErrorCode> {
     #[cfg(windows)]
     {
-        let (view, changed) = with_repository(app, |storage| {
-            storage.projects().get_with_refresh(id, correlation)
-        })?;
-        if changed {
-            crate::app_state::publish(app, correlation.into());
-        }
-        Ok(view)
+        crate::app_state::with_state(app, |state| {
+            let result = with_repository(app, |storage| {
+                storage.projects().get_with_refresh(id, correlation)
+            });
+            match result {
+                Ok((view, invalidated)) => {
+                    let active_matches = state
+                        .active_project
+                        .as_ref()
+                        .is_some_and(|project| project.project_id == id);
+                    let next = if active_matches
+                        && view.authorization == crate::project_contract::Authorization::Granted
+                        && view.availability == crate::project_contract::Availability::Available
+                    {
+                        Some(crate::project_contract::ActiveProject {
+                            project_id: view.id.clone(),
+                            name: view
+                                .display_name
+                                .clone()
+                                .unwrap_or_else(|| view.name.clone()),
+                        })
+                    } else if active_matches {
+                        None
+                    } else {
+                        state.active_project.clone()
+                    };
+                    let state_changed = crate::app_state::set_active_project_locked(
+                        app,
+                        state,
+                        next,
+                        correlation.into(),
+                    );
+                    if invalidated && !state_changed {
+                        crate::app_state::publish_locked(app, state, correlation.into());
+                    }
+                    Ok(view)
+                }
+                Err(code) => {
+                    if code == ErrorCode::ProjectNotFound
+                        && state
+                            .active_project
+                            .as_ref()
+                            .is_some_and(|project| project.project_id == id)
+                    {
+                        crate::app_state::set_active_project_locked(
+                            app,
+                            state,
+                            None,
+                            correlation.into(),
+                        );
+                    }
+                    Err(code)
+                }
+            }
+        })
     }
     #[cfg(not(windows))]
     {
@@ -267,13 +336,28 @@ pub fn remove(
 ) -> Result<crate::project_contract::RemoveResult, ErrorCode> {
     #[cfg(windows)]
     {
-        let result = with_repository(app, |storage| {
-            storage.projects().remove(id, revision, correlation)
-        })?;
-        crate::app_state::publish(app, correlation.into());
-        Ok(crate::project_contract::RemoveResult {
-            removed: result.removed,
-            retained_for_history: result.retained_for_history,
+        crate::app_state::with_state(app, |state| {
+            let result = with_repository(app, |storage| {
+                storage.projects().remove(id, revision, correlation)
+            })?;
+            let active = if state
+                .active_project
+                .as_ref()
+                .is_some_and(|project| project.project_id == id)
+            {
+                None
+            } else {
+                state.active_project.clone()
+            };
+            let changed =
+                crate::app_state::set_active_project_locked(app, state, active, correlation.into());
+            if !changed {
+                crate::app_state::publish_locked(app, state, correlation.into());
+            }
+            Ok(crate::project_contract::RemoveResult {
+                removed: result.removed,
+                retained_for_history: result.retained_for_history,
+            })
         })
     }
     #[cfg(not(windows))]
@@ -282,6 +366,202 @@ pub fn remove(
         Err(ErrorCode::ProjectNotFound)
     }
 }
+
+pub fn select(
+    app: &tauri::AppHandle,
+    id: &str,
+    correlation: &str,
+) -> Result<crate::project_contract::ActiveProject, ErrorCode> {
+    #[cfg(windows)]
+    {
+        crate::app_state::with_state(app, |state| {
+            let (view, invalidated) = with_repository(app, |storage| {
+                storage.projects().get_with_refresh(id, correlation)
+            })?;
+            if view.authorization != crate::project_contract::Authorization::Granted
+                || view.availability != crate::project_contract::Availability::Available
+            {
+                let active_matches = state
+                    .active_project
+                    .as_ref()
+                    .is_some_and(|project| project.project_id == id);
+                let changed = if active_matches {
+                    crate::app_state::set_active_project_locked(
+                        app,
+                        state,
+                        None,
+                        correlation.into(),
+                    )
+                } else {
+                    false
+                };
+                if invalidated && !changed {
+                    crate::app_state::publish_locked(app, state, correlation.into());
+                }
+                return Err(match view.availability {
+                    crate::project_contract::Availability::Missing
+                    | crate::project_contract::Availability::Inaccessible => {
+                        ErrorCode::ProjectPathUnavailable
+                    }
+                    _ => ErrorCode::ProjectPathChanged,
+                });
+            }
+            let active = crate::project_contract::ActiveProject {
+                project_id: view.id.clone(),
+                name: view
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| view.name.clone()),
+            };
+            active.validate_wire()?;
+            if let Err(code) = with_repository(app, |storage| {
+                storage.projects().record_usage(
+                    &active.project_id,
+                    view.revision,
+                    crate::storage::projects::UsageSource::Selection,
+                    |_| Ok(()),
+                )
+            }) {
+                let latest = with_repository(app, |storage| {
+                    storage.projects().get_with_refresh(id, correlation)
+                });
+                let mut state_changed = false;
+                let mut status_invalidated = invalidated;
+                match latest {
+                    Ok((latest, changed)) => {
+                        status_invalidated |= changed;
+                        if state
+                            .active_project
+                            .as_ref()
+                            .is_some_and(|project| project.project_id == id)
+                        {
+                            let next = if latest.authorization
+                                == crate::project_contract::Authorization::Granted
+                                && latest.availability
+                                    == crate::project_contract::Availability::Available
+                            {
+                                Some(crate::project_contract::ActiveProject {
+                                    project_id: latest.id,
+                                    name: latest.display_name.unwrap_or(latest.name),
+                                })
+                            } else {
+                                None
+                            };
+                            state_changed = crate::app_state::set_active_project_locked(
+                                app,
+                                state,
+                                next,
+                                correlation.into(),
+                            );
+                        }
+                    }
+                    Err(ErrorCode::ProjectNotFound) => {
+                        if state
+                            .active_project
+                            .as_ref()
+                            .is_some_and(|project| project.project_id == id)
+                        {
+                            state_changed = crate::app_state::set_active_project_locked(
+                                app,
+                                state,
+                                None,
+                                correlation.into(),
+                            );
+                        }
+                    }
+                    Err(_) => {}
+                }
+                if status_invalidated && !state_changed {
+                    crate::app_state::publish_locked(app, state, correlation.into());
+                }
+                return Err(code);
+            }
+            if !crate::app_state::set_active_project_locked(
+                app,
+                state,
+                Some(active.clone()),
+                correlation.into(),
+            ) {
+                crate::app_state::publish_locked(app, state, correlation.into());
+            }
+            Ok(active)
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, id, correlation);
+        Err(ErrorCode::ProjectPathUnavailable)
+    }
+}
+
+pub fn project_settings(
+    app: &tauri::AppHandle,
+    id: &str,
+    correlation: &str,
+) -> Result<crate::project_contract::ProjectSettingsView, ErrorCode> {
+    #[cfg(windows)]
+    {
+        get(app, id, correlation)?;
+        let result = with_repository(app, |storage| {
+            storage.projects().project_settings(id, correlation)
+        });
+        if let Err(code) = result {
+            reconcile_path_failure(app, id, correlation, code);
+            return Err(code);
+        }
+        result
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, id, correlation);
+        Err(ErrorCode::ProjectPathUnavailable)
+    }
+}
+
+#[cfg(windows)]
+pub fn refresh_active(app: &tauri::AppHandle) {
+    let correlation = crate::ipc::correlation_id();
+    crate::app_state::with_state(app, |state| {
+        let Some(active) = state.active_project.clone() else {
+            return;
+        };
+        let result = with_repository(app, |storage| {
+            storage
+                .projects()
+                .get_with_refresh(&active.project_id, &correlation)
+        });
+        match result {
+            Ok((view, invalidated)) => {
+                let next = if view.authorization == crate::project_contract::Authorization::Granted
+                    && view.availability == crate::project_contract::Availability::Available
+                {
+                    Some(crate::project_contract::ActiveProject {
+                        project_id: view.id,
+                        name: view.display_name.unwrap_or(view.name),
+                    })
+                } else {
+                    None
+                };
+                let changed = crate::app_state::set_active_project_locked(
+                    app,
+                    state,
+                    next,
+                    correlation.clone(),
+                );
+                if invalidated && !changed {
+                    crate::app_state::publish_locked(app, state, correlation);
+                }
+            }
+            Err(ErrorCode::ProjectNotFound) => {
+                crate::app_state::set_active_project_locked(app, state, None, correlation);
+            }
+            Err(_) => {}
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn refresh_active(_: &tauri::AppHandle) {}
 
 /// Fixed synthetic source only; guarded by ipc_fixture's debug main capability.
 #[cfg(all(debug_assertions, windows))]

@@ -1,5 +1,6 @@
 //! Typed settings service. No arbitrary configuration, credentials or shell arguments.
 use crate::{ipc::ErrorCode, overlay, storage};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::Manager;
@@ -172,7 +173,7 @@ impl Scope {
     pub fn authorize(&self) -> Result<(), ErrorCode> {
         match self.scope.as_str() {
             "global" if self.project_id.is_none() => Ok(()),
-            // No project has an authorization grant until the phase 2 project entry exists.
+            // Project-scoped writes remain unavailable during phase 2.
             "project"
                 if self
                     .project_id
@@ -236,6 +237,142 @@ pub fn get(app: &tauri::AppHandle) -> Result<View, ErrorCode> {
     app.state::<storage::StorageState>()
         .with_storage(|storage| Ok(storage.settings().read_view()))
         .map_err(|_| ErrorCode::SettingsStorageFailed)?
+}
+
+pub(crate) fn project_read_view(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+) -> Result<Vec<(String, crate::project_contract::ProjectSetting)>, ErrorCode> {
+    use crate::project_contract::{
+        ApprovalPolicy, LogLevel, ProjectAiSelection, ProjectEditor, ProjectSetting,
+        ProjectSettingKind, ProjectSort, SearchEngine, SettingSource,
+    };
+
+    fn from_global(change: Change) -> Result<ProjectSettingKind, ErrorCode> {
+        use crate::project_contract::*;
+        Ok(match change {
+            Change::SearchEngine(v) => ProjectSettingKind::SearchEngine(match v.as_str() {
+                "bing" => SearchEngine::Bing,
+                "google" => SearchEngine::Google,
+                _ => return Err(ErrorCode::SettingsCorrupt),
+            }),
+            Change::Editor(v) => ProjectSettingKind::Editor(v.map(|v| ProjectEditor {
+                id: v.id,
+                executable: v.executable,
+            })),
+            Change::ProjectSort(v) => ProjectSettingKind::ProjectSort(match v.as_str() {
+                "recent" => ProjectSort::Recent,
+                "name" => ProjectSort::Name,
+                _ => return Err(ErrorCode::SettingsCorrupt),
+            }),
+            Change::ApprovalPolicy(v) => ProjectSettingKind::ApprovalPolicy(if v == "ask" {
+                ApprovalPolicy::Ask
+            } else {
+                return Err(ErrorCode::SettingsCorrupt);
+            }),
+            Change::LogLevel(v) => ProjectSettingKind::LogLevel(match v.as_str() {
+                "error" => LogLevel::Error,
+                "warn" => LogLevel::Warn,
+                "info" => LogLevel::Info,
+                "debug" => LogLevel::Debug,
+                _ => return Err(ErrorCode::SettingsCorrupt),
+            }),
+            Change::SummaryRetentionDays(v) => ProjectSettingKind::SummaryRetentionDays(
+                v.try_into().map_err(|_| ErrorCode::SettingsCorrupt)?,
+            ),
+            Change::AiDefaults(value) => ProjectSettingKind::AiDefaults(
+                value
+                    .map(serde_json::from_value::<ProjectAiSelection>)
+                    .transpose()
+                    .map_err(|_| ErrorCode::SettingsCorrupt)?,
+            ),
+            Change::OverlayEnabled(_) | Change::OverlayShortcut(_) | Change::OverlayPosition(_) => {
+                return Err(ErrorCode::SettingsCorrupt);
+            }
+        })
+    }
+
+    fn project_override(
+        connection: &rusqlite::Connection,
+        project_id: &str,
+        key: &str,
+    ) -> Result<Option<ProjectSettingKind>, ErrorCode> {
+        let row: Option<(Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<i64>)> = connection
+            .query_row("SELECT s.value_text,s.value_integer,s.profile_id,s.model_id,s.effort,r.profile_revision FROM settings s LEFT JOIN ai_default_revisions r ON r.setting_id=s.id WHERE s.scope='project' AND s.project_id=?1 AND s.key=?2", rusqlite::params![project_id,key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))
+            .optional().map_err(|_| ErrorCode::SettingsStorageFailed)?;
+        let Some((text, integer, profile, model, effort, ai_revision)) = row else {
+            return Ok(None);
+        };
+        let corrupt = || ErrorCode::SettingsCorrupt;
+        let value = match key {
+            "search_engine" => ProjectSettingKind::SearchEngine(match text.as_deref() {
+                Some("bing") => SearchEngine::Bing,
+                Some("google") => SearchEngine::Google,
+                _ => return Err(corrupt()),
+            }),
+            "editor" => ProjectSettingKind::Editor(Some(
+                serde_json::from_str::<ProjectEditor>(&text.ok_or_else(corrupt)?)
+                    .map_err(|_| corrupt())?,
+            )),
+            "project_sort" => ProjectSettingKind::ProjectSort(match text.as_deref() {
+                Some("recent") => ProjectSort::Recent,
+                Some("name") => ProjectSort::Name,
+                _ => return Err(corrupt()),
+            }),
+            "approval_policy" => {
+                ProjectSettingKind::ApprovalPolicy(if text.as_deref() == Some("ask") {
+                    ApprovalPolicy::Ask
+                } else {
+                    return Err(corrupt());
+                })
+            }
+            "log_level" => ProjectSettingKind::LogLevel(match text.as_deref() {
+                Some("error") => LogLevel::Error,
+                Some("warn") => LogLevel::Warn,
+                Some("info") => LogLevel::Info,
+                Some("debug") => LogLevel::Debug,
+                _ => return Err(corrupt()),
+            }),
+            "summary_retention_days" => ProjectSettingKind::SummaryRetentionDays(
+                integer
+                    .ok_or_else(corrupt)?
+                    .try_into()
+                    .map_err(|_| corrupt())?,
+            ),
+            "ai_defaults" => ProjectSettingKind::AiDefaults(Some(ProjectAiSelection {
+                profile_id: profile.ok_or_else(corrupt)?,
+                expected_revision: ai_revision
+                    .ok_or_else(corrupt)?
+                    .try_into()
+                    .map_err(|_| corrupt())?,
+                model_id: model.ok_or_else(corrupt)?,
+                effort,
+            })),
+            _ => return Err(corrupt()),
+        };
+        Ok(Some(value))
+    }
+
+    let mut global = storage::settings::read_for_project(connection)?;
+    global.values.retain(|v| {
+        !matches!(
+            v,
+            Change::OverlayEnabled(_) | Change::OverlayShortcut(_) | Change::OverlayPosition(_)
+        )
+    });
+    global
+        .values
+        .into_iter()
+        .map(|change| {
+            let key = change.key().to_owned();
+            let inherited = from_global(change)?;
+            let (setting, source) = match project_override(connection, project_id, &key)? {
+                Some(value) => (value, SettingSource::Project),
+                None => (inherited, SettingSource::Global),
+            };
+            Ok((key, ProjectSetting { setting, source }))
+        })
+        .collect()
 }
 
 pub fn update(app: &tauri::AppHandle, request: Update, id: String) -> Result<View, ErrorCode> {

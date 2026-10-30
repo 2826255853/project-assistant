@@ -258,6 +258,23 @@ async fn project_remove(
 }
 
 #[tauri::command]
+async fn project_select(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<serde_json::Value> {
+    let id = ipc::correlation_id();
+    let result =
+        project_request::<project_contract::ProjectIdRequest>(&window, request).and_then(|p| {
+            p.validate()?;
+            let active = projects::select(&app, &p.project_id, &id)?;
+            serde_json::to_value(serde_json::json!({"activeProject": active}))
+                .map_err(|_| ipc::ErrorCode::InternalUnexpected)
+        });
+    complete(&app, "project_select", id, result)
+}
+
+#[tauri::command]
 async fn providers_list(
     request: serde_json::Value,
     app: tauri::AppHandle,
@@ -659,13 +676,30 @@ async fn settings_get(
     request: serde_json::Value,
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-) -> ipc::Response<settings::View> {
+) -> ipc::Response<serde_json::Value> {
     let id = ipc::correlation_id();
     let result = (|| {
         ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
         let scope: settings::Scope = ipc::parse_request(request)?;
+        if scope.scope == "project" {
+            let project_id = scope
+                .project_id
+                .as_deref()
+                .ok_or(ipc::ErrorCode::InvalidRequest)?;
+            return projects::project_settings(&app, project_id, &id)
+                .map(|v| serde_json::to_value(v).map_err(|_| ipc::ErrorCode::InternalUnexpected))
+                .and_then(|v| v);
+        }
         scope.authorize()?;
         settings::get(&app)
+            .and_then(|v| serde_json::to_value(v).map_err(|_| ipc::ErrorCode::InternalUnexpected))
     })();
     complete(&app, "settings_get", id, result)
 }
@@ -1025,6 +1059,7 @@ pub fn run() {
             project_open_file,
             project_pick_file,
             project_remove,
+            project_select,
             desktop_initialize,
             app_get_status,
             settings_get,

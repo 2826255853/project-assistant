@@ -12,7 +12,7 @@ pub mod probe;
 #[cfg(windows)]
 pub mod projects;
 mod repositories;
-mod settings;
+pub(crate) mod settings;
 pub use repositories::{
     AUDIT_RETENTION_MS, AuditEventInput, AuditRepository, CapabilityRepository, CredentialProfile,
     ProfileRepository, SettingRecord, SettingsRepository, SnapshotRepository,

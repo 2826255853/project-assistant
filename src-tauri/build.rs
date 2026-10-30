@@ -9,6 +9,7 @@ fn main() {
             "project_open_file",
             "project_pick_file",
             "project_remove",
+            "project_select",
             "desktop_initialize",
             "app_get_status",
             "settings_get",

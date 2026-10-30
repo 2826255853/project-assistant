@@ -66,7 +66,7 @@ test("IPC permissions are limited to the local main window and explicit commands
   assert.ok(!config.permissions.some((p) => typeof p === "string" && /shell|fs:|allow-all/.test(p)));
 });
 
-test("S2-06 exposes eight project commands to main with the matching manifest", async () => {
+test("S2-08 exposes project selection only to main with matching IPC and capability", async () => {
   const { readFile } = await import("node:fs/promises");
   const read = path => readFile(new URL(path, import.meta.url), "utf8");
   const [contracts, rustCommands, manifest, mainCapability, overlayCapability, appState] = await Promise.all([
@@ -79,20 +79,14 @@ test("S2-06 exposes eight project commands to main with the matching manifest", 
   ]);
   const implemented = contracts.match(/export interface ImplementedCommandMap \{([\s\S]*?)^\}/m)?.[1];
   assert.ok(implemented, "implemented command map is present");
-  const implementedProjects = ["projects_add_from_picker", "projects_list", "project_get", "project_git_summary", "project_remove", "project_open_directory", "project_open_file", "project_pick_file"];
+  const implementedProjects = ["projects_add_from_picker", "projects_list", "project_get", "project_git_summary", "project_remove", "project_select", "project_open_directory", "project_open_file", "project_pick_file"];
   for (const command of implementedProjects) {
     assert.equal(implemented.includes(command), true);
     assert.equal(rustCommands.includes(command), true);
     assert.equal(manifest.includes(command), true);
     assert.ok(mainCapability.permissions.includes(`allow-${command.replaceAll("_", "-")}`));
   }
-  const planned = ["project_select"];
-  for (const command of planned) {
-    assert.equal(implemented.includes(command), false, `${command} is not implemented`);
-    assert.equal(rustCommands.includes(command), false, `${command} is not registered in Rust`);
-    assert.equal(manifest.includes(command), false, `${command} is not in the Tauri command manifest`);
-  }
-  assert.equal(mainCapability.permissions.filter(permission => /project/i.test(permission)).length, 8);
+  assert.equal(mainCapability.permissions.filter(permission => /project/i.test(permission)).length, 9);
   assert.equal(overlayCapability.permissions.some(permission => /project/i.test(permission)), false);
   assert.match(appState, /service.id == "storage"/);
   assert.match(appState, /projects.state = storage_health\.0/);

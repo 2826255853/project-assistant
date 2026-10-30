@@ -106,6 +106,7 @@ export interface AppStatus {
   apiVersion: 1; streamId: string; sequence: number; configState: ConfigState;
   services: ServiceStatus[]; ccSwitch: ManualCcSwitchStatus;
   activeContext: ActiveContext | null; taskStatus: "idle"; overlay: OverlayView;
+  activeProject: ActiveProject | null;
 }
 export type OverlayAction =
   | { action: "expand" | "collapse" | "enable" | "disable" | "open_main" | "exit" | "repair_position" }
@@ -120,6 +121,7 @@ export interface ImplementedCommandMap {
   project_open_file: CommandMap["project_open_file"];
   project_pick_file: CommandMap["project_pick_file"];
   project_remove: CommandMap["project_remove"];
+  project_select: CommandMap["project_select"];
   providers_list: CommandMap["providers_list"];
   provider_save: CommandMap["provider_save"];
   provider_set_enabled: CommandMap["provider_set_enabled"];
@@ -134,7 +136,7 @@ export interface ImplementedCommandMap {
   app_get_status: { params: Record<string, never>; data: AppStatus };
   overlay_get: { params: Record<string, never>; data: OverlayView };
   overlay_control: { params: OverlayAction; data: null };
-  settings_get: { params: SettingsScope; data: SettingsView };
+  settings_get: { params: SettingsScope; data: SettingsView | ProjectSettingsView };
   settings_update: { params: SettingsScope & { expectedRevision: number; changes: SettingChange[] }; data: SettingsView };
   // Main-window only; logs_clear returns the authoritative status after cleanup.
   logs_get_status: { params: Record<string, never>; data: LogStatus };
@@ -144,7 +146,7 @@ export interface ImplementedCommandMap {
 }
 type Assert<T extends true> = T;
 export type FutureProjectCommandsRemainUnimplemented = Assert<
-  Extract<keyof ImplementedCommandMap, "project_select"> extends never ? true : false
+  Extract<keyof ImplementedCommandMap, "project_select"> extends "project_select" ? true : false
 >;
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.

@@ -116,6 +116,10 @@ fn read(connection: &Connection) -> Result<View, ErrorCode> {
     Ok(view)
 }
 
+pub(crate) fn read_for_project(connection: &Connection) -> Result<View, ErrorCode> {
+    read(connection)
+}
+
 fn write(connection: &Connection, view: &View) -> Result<(), ErrorCode> {
     for change in &view.values {
         let (text, integer) = match change {

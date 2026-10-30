@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { call, createProjectSearch } from "../ipc/client";
-import type { GitSummary, ProjectView, SettingsView } from "../ipc/contracts";
+import type { ActiveProject, GitSummary, ProjectSetting, ProjectSettingsView, ProjectView, SettingsView } from "../ipc/contracts";
 import type { ProjectSearchState } from "../ipc/projectSearch";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { StatePanel } from "../components/StatePanel";
@@ -46,6 +46,21 @@ function gitLabel(summary: GitSummary | null) {
 function formatUsedAt(value: number | null) {
   if (value === null) return "尚未打开";
   return new Date(value).toLocaleString();
+}
+
+function projectSettingLabel(setting: ProjectSetting) {
+  const labels: Record<ProjectSetting["key"], string> = {
+    search_engine: "搜索引擎", editor: "编辑器", project_sort: "项目排序", approval_policy: "审批策略",
+    log_level: "日志级别", summary_retention_days: "摘要留存天数", ai_defaults: "AI 默认配置",
+  };
+  return labels[setting.key];
+}
+
+function projectSettingValue(setting: ProjectSetting) {
+  if (setting.key === "editor") return setting.value ? setting.value.executable : "系统默认程序";
+  if (setting.key === "ai_defaults") return setting.value ? `${setting.value.profileId} · ${setting.value.modelId}` : "未设置";
+  if (setting.key === "summary_retention_days") return `${setting.value} 天`;
+  return String(setting.value);
 }
 
 function RecentProjects({ onOpen, onManage, refreshKey }: { onOpen: (id: string) => void; onManage: () => void; refreshKey: string }) {
@@ -108,7 +123,7 @@ export function HomeProjects({ onOpen, onManage, refreshKey }: { onOpen: (id: st
   return <RecentProjects onOpen={onOpen} onManage={onManage} refreshKey={refreshKey} />;
 }
 
-export function ProjectsPage({ initialProjectId, onBackHome, refreshKey }: { initialProjectId: string | null; onBackHome: () => void; refreshKey: string }) {
+export function ProjectsPage({ initialProjectId, onBackHome, refreshKey, activeProject }: { initialProjectId: string | null; onBackHome: () => void; refreshKey: string; activeProject: ActiveProject | null }) {
   const [search, setSearch] = useState<ProjectSearchState>(initialSearch);
   const [query, setQuery] = useState("");
   const queryRef = useRef("");
@@ -130,11 +145,15 @@ export function ProjectsPage({ initialProjectId, onBackHome, refreshKey }: { ini
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
+  const [selectionBusy, setSelectionBusy] = useState(false);
+  const [projectSettings, setProjectSettings] = useState<ProjectSettingsView | null>(null);
+  const [projectSettingsError, setProjectSettingsError] = useState<PublicError | null>(null);
+  const [projectSettingsBusy, setProjectSettingsBusy] = useState(false);
 
   const selected = useMemo(() => search.items.find(project => project.id === selectedId) ?? null, [search.items, selectedId]);
   const sort = (settings?.values.find(change => change.key === "project_sort")?.value as "recent" | "name" | undefined) ?? "recent";
   const usable = selected?.availability === "available" && selected.authorization === "granted";
-  const busy = Boolean(action) || addBusy || sortBusy;
+  const busy = Boolean(action) || addBusy || sortBusy || selectionBusy;
 
   useEffect(() => {
     const controller = createProjectSearch(next => setSearch(next));
@@ -190,6 +209,11 @@ export function ProjectsPage({ initialProjectId, onBackHome, refreshKey }: { ini
     return () => { mounted = false; };
   }, [selected?.id, selected?.revision]);
 
+  useEffect(() => {
+    setProjectSettings(null);
+    setProjectSettingsError(null);
+  }, [selected?.id]);
+
   function refreshList() {
     void controllerRef.current?.search(queryRef.current);
   }
@@ -199,6 +223,36 @@ export function ProjectsPage({ initialProjectId, onBackHome, refreshKey }: { ini
     setSelectedFile(null);
     setConfirmRemove(false);
     if (focus) requestAnimationFrame(() => rowRefs.current[id]?.focus());
+  }
+
+  async function activateProject() {
+    if (!selected || selectionBusy || action || addBusy || sortBusy || !usable) return;
+    setActionError(null);
+    setActionMessage("");
+    setSelectionBusy(true);
+    try {
+      await call("project_select", { projectId: selected.id });
+      setActionMessage("活动项目已切换。悬浮入口会同步最小项目上下文。");
+    } catch (cause) {
+      setActionError(toPublicError(cause));
+      refreshList();
+    } finally {
+      setSelectionBusy(false);
+    }
+  }
+
+  async function readProjectSettings() {
+    if (!selected || projectSettingsBusy || !usable) return;
+    setProjectSettingsBusy(true);
+    setProjectSettingsError(null);
+    try {
+      setProjectSettings(await call("settings_get", { scope: "project", projectId: selected.id }));
+    } catch (cause) {
+      setProjectSettingsError(toPublicError(cause));
+      refreshList();
+    } finally {
+      setProjectSettingsBusy(false);
+    }
   }
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -381,7 +435,7 @@ export function ProjectsPage({ initialProjectId, onBackHome, refreshKey }: { ini
       <section className="project-list-panel" aria-label="项目列表">
         <div className="project-list-heading"><strong>{query ? `搜索结果（${search.items.length}${search.nextCursor ? "+" : ""}）` : "已登记项目"}</strong>{search.loading && <span role="status">正在更新…</span>}</div>
         <div className="project-list" role="listbox" tabIndex={0} aria-label="项目" aria-activedescendant={selectedId ? `project-row-${selectedId}` : undefined} onKeyDown={handleListKeyDown}>
-          {search.items.map((project, index) => <button type="button" role="option" disabled={busy} aria-selected={project.id === selectedId} id={`project-row-${project.id}`} data-testid="project-row" className={`project-row${project.id === selectedId ? " selected" : ""}`} key={project.id} ref={element => { rowRefs.current[project.id] = element; }} onClick={() => selectProject(project.id)} onKeyDown={event => handleRowKeyDown(event, index)}>
+          {search.items.map((project, index) => <button type="button" role="option" disabled={busy} aria-selected={project.id === selectedId} aria-current={project.id === activeProject?.projectId ? "true" : undefined} id={`project-row-${project.id}`} data-testid="project-row" className={`project-row${project.id === selectedId ? " selected" : ""}`} key={project.id} ref={element => { rowRefs.current[project.id] = element; }} onClick={() => selectProject(project.id)} onKeyDown={event => handleRowKeyDown(event, index)}>
             <span className="project-row-mark" aria-hidden="true" />
             <span className="project-row-copy"><strong>{projectLabel(project)}</strong><small>{project.absolutePath}</small><small>最近使用：{formatUsedAt(project.lastUsedAt)}</small></span>
             <span className={`project-badge project-${project.availability}`}>{availabilityLabel(project)}</span>
@@ -390,11 +444,13 @@ export function ProjectsPage({ initialProjectId, onBackHome, refreshKey }: { ini
         {search.nextCursor && <button type="button" className="quiet-button project-load-more" disabled={busy || search.loading} onClick={() => void controllerRef.current?.loadMore()}>加载更多</button>}
       </section>
       {selected && <section className="project-detail-panel" aria-label="项目详情" data-testid="project-detail">
-        <div className="project-detail-heading"><div><p className="eyebrow">已选择项目</p><h3>{projectLabel(selected)}</h3></div><span className={`project-badge project-${selected.availability}`}>{availabilityLabel(selected)}</span></div>
+        <div className="project-detail-heading"><div><p className="eyebrow">{activeProject?.projectId === selected.id ? "当前活动项目" : "已选择项目"}</p><h3>{projectLabel(selected)}</h3></div><span className={`project-badge project-${selected.availability}`}>{availabilityLabel(selected)}</span></div>
         <dl className="project-detail-list"><dt>目录</dt><dd>{selected.absolutePath}</dd><dt>授权</dt><dd>{selected.authorization === "granted" ? "已授权" : "需要重新授权"}</dd><dt>最近使用</dt><dd>{formatUsedAt(selected.lastUsedAt)}</dd><dt>Git</dt><dd>{gitLabel(git)} <button type="button" className="text-button" data-testid="project-git-refresh" disabled={gitBusy || busy} onClick={() => void refreshGit()}>{gitBusy ? "刷新中…" : "刷新"}</button></dd></dl>
         {gitError && <ErrorNotice error={gitError} testId="project-git-error" actions={<button type="button" onClick={() => void refreshGit()}>重试 Git 摘要</button>} />}
         {git && git.state !== "available" && <p className="project-degraded" data-testid="project-git-degraded">Git 摘要不可用不会阻塞目录和文件打开。</p>}
+        <section className="project-settings-readonly" data-testid="project-settings-readonly"><h4>项目设置（只读）</h4><button type="button" className="quiet-button" data-testid="project-settings-read" disabled={busy || !usable || projectSettingsBusy} onClick={() => void readProjectSettings()}>{projectSettingsBusy ? "正在读取…" : projectSettings ? "重新读取有效设置" : "读取有效设置"}</button>{projectSettingsError && <ErrorNotice error={projectSettingsError} testId="project-settings-read-error" />}{projectSettings && <dl className="project-detail-list">{projectSettings.values.map(setting => <Fragment key={setting.key}><dt>{projectSettingLabel(setting)}</dt><dd>{projectSettingValue(setting)} · {setting.source === "project" ? "项目值" : "全局继承"}</dd></Fragment>)}</dl>}</section>
         {selected.availability !== "available" || selected.authorization !== "granted" ? <div className="project-unavailable" data-testid="project-path-unavailable">此项目路径当前不可用。请重新选择原目录并确认授权后恢复。<button type="button" className="quiet-button" data-testid="project-reauthorize" disabled={busy} onClick={() => void addProject()}>{addBusy ? "正在选择…" : "重新选择目录并授权"}</button></div> : <div className="project-actions">
+          <button type="button" className="primary-button" data-testid="project-select-active" disabled={busy || activeProject?.projectId === selected.id} onClick={() => void activateProject()}>{selectionBusy ? "正在切换…" : activeProject?.projectId === selected.id ? "当前活动项目" : "设为活动项目"}</button>
           <button type="button" className="primary-button" data-testid="project-open-directory" disabled={busy} onClick={() => void openDirectory()}>{action === "directory" ? "正在打开…" : "打开目录"}</button>
           <button type="button" className="quiet-button" data-testid="project-pick-file" disabled={busy} onClick={() => void pickFile()}>{action === "pick" ? "正在选择…" : "选择文件"}</button>
           {selectedFile && <div className="selected-file" data-testid="project-selected-file"><span title={selectedFile}>{selectedFile}</span><button type="button" className="quiet-button" data-testid="project-open-file" disabled={busy} onClick={() => void openFile()}>{action === "file" ? "正在打开…" : "打开所选文件"}</button></div>}

@@ -1,7 +1,7 @@
 import { invoke, transformCallback } from "@tauri-apps/api/core";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ImplementedCommandMap, OverlayAction } from "./contracts";
+import type { ImplementedCommandMap, OverlayAction, ProjectSettingsView, SettingsView } from "./contracts";
 import { API_VERSION } from "./contracts";
 import { isDesktopReady, isProbeReply, parseResponse, unwrap } from "./response";
 import { awaitTransport } from "./transport";
@@ -11,13 +11,13 @@ import { isLogStatus } from "./logging";
 import { isCredentialMutation } from "./credentials";
 import { isProviderList, isProviderProfile, isModels, isReceipt, isOperation, isRemoved, isAccepted } from "./providers";
 import { errorForCode } from "./errors";
-import { isProjectView, isProjectPickerResult, isRemovedProject, isProjectListPage, isProjectOpenAccepted, isProjectFilePickerResult, isGitSummary } from "./projects";
+import { isProjectView, isProjectPickerResult, isRemovedProject, isProjectListPage, isProjectOpenAccepted, isProjectFilePickerResult, isGitSummary, isSelectedProject, isProjectSettingsView } from "./projects";
 import { ProjectSearchController } from "./projectSearch";
 import type { ProjectSearchState } from "./projectSearch";
 
 type Name = keyof ImplementedCommandMap;
 const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMap[K]["data"] } = {
-  projects_add_from_picker: isProjectPickerResult, project_get: isProjectView, project_remove: isRemovedProject,
+  projects_add_from_picker: isProjectPickerResult, project_get: isProjectView, project_remove: isRemovedProject, project_select: isSelectedProject,
   projects_list: isProjectListPage,
   project_git_summary: isGitSummary,
   project_open_directory: isProjectOpenAccepted, project_open_file: isProjectOpenAccepted,
@@ -28,19 +28,27 @@ const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMa
   framework_probe: isProbeReply, desktop_initialize: isDesktopReady,
   app_get_status: isAppStatus, overlay_get: isOverlayView,
   overlay_control: (data): data is null => data === null,
-  settings_get: isSettingsView, settings_update: isSettingsView,
+  settings_get: value => isSettingsView(value) || isProjectSettingsView(value), settings_update: isSettingsView,
   logs_get_status: isLogStatus, logs_clear: isLogStatus,
   credential_put: isCredentialMutation, credential_remove: isCredentialMutation,
 };
+export function call(command: "settings_get", params: { scope: "global" }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SettingsView>;
+export function call(command: "settings_get", params: { scope: "project"; projectId: string }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ProjectSettingsView>;
+export function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]>;
 export async function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]> {
   if ((command === "logs_get_status" || command === "logs_clear" || command === "credential_put" || command === "credential_remove" || command.startsWith("project") || command.startsWith("provider") || command.startsWith("operation_")) && !isMainWindow()) throw errorForCode("PA_IPC_PERMISSION_DENIED");
   const timeoutMs = command === "project_pick_file" ? 120000 : command === "project_open_directory" || command === "project_open_file" ? 12000 : command === "project_git_summary" ? 8000 : undefined;
   const wire = await awaitTransport(() => invoke<unknown>(command, { request: { apiVersion: API_VERSION, params } }), { timeoutMs, ...options });
-  const result = unwrap(parseResponse(wire, validators[command]));
+  const responseValidator = (command === "settings_get"
+    ? (params as unknown as { scope?: unknown }).scope === "project"
+      ? isProjectSettingsView
+      : isSettingsView
+    : validators[command]) as (data: unknown) => data is ImplementedCommandMap[K]["data"];
+  const result = unwrap(parseResponse(wire, responseValidator));
   // Nested errors inside successful operation envelopes obey the same local
   // presentation rule as envelope errors: never render wire/remote text.
   if (command === "operation_get") {
-    const op = result as ImplementedCommandMap["operation_get"]["data"];
+    const op = result as unknown as ImplementedCommandMap["operation_get"]["data"];
     if (op.error) op.error = errorForCode(op.error.code);
     if (op.result && "outcome" in op.result && op.result.outcome !== "applied") op.result.error = errorForCode(op.result.error.code);
   }

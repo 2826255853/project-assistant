@@ -1,5 +1,5 @@
 //! Service-owned state and a process-wide event cursor. No external configuration probes.
-use crate::{ipc, overlay};
+use crate::{ipc, overlay, project_contract::ActiveProject};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -43,6 +43,7 @@ pub struct AppStatus {
     pub services: Vec<ServiceStatus>,
     pub cc_switch: ManualCcSwitchStatus,
     pub active_context: Option<ActiveContext>,
+    pub active_project: Option<ActiveProject>,
     pub task_status: &'static str,
     pub overlay: overlay::OverlayView,
 }
@@ -69,6 +70,7 @@ pub struct StateData {
     stream_id: String,
     sequence: u64,
     pub active_context: Option<ActiveContext>,
+    pub active_project: Option<ActiveProject>,
     #[cfg(debug_assertions)]
     pub last_event: Option<AppEvent>,
 }
@@ -78,6 +80,7 @@ impl Default for StateData {
             stream_id: format!("stream-{}", ipc::correlation_id()),
             sequence: 0,
             active_context: None,
+            active_project: None,
             #[cfg(debug_assertions)]
             last_event: None,
         }
@@ -122,7 +125,12 @@ impl StateData {
             stream_id: self.stream_id.clone(),
             sequence: self.sequence,
             config_state: "unconfigured",
-            active_context: self.active_context.clone(),
+            active_context: if private_draft {
+                None
+            } else {
+                self.active_context.clone()
+            },
+            active_project: self.active_project.clone(),
             task_status: "idle",
             overlay,
             cc_switch: ManualCcSwitchStatus {
@@ -177,6 +185,9 @@ fn storage_state(app: &tauri::AppHandle) -> crate::storage::StorageHealth {
 }
 
 pub fn status(app: &tauri::AppHandle, private_draft: bool) -> AppStatus {
+    if !app.state::<crate::desktop::DesktopState>().phase0 {
+        crate::projects::refresh_active(app);
+    }
     let state = app.state::<AppState>();
     let data = state.0.lock().unwrap();
     let mut result = data.snapshot(overlay::view(app), private_draft, storage_state(app));
@@ -311,7 +322,31 @@ pub fn publish(app: &tauri::AppHandle, correlation_id: String) {
     let state = app.state::<AppState>();
     let mut data = state.0.lock().unwrap();
     // Serialize publishing and snapshot reads with the cursor lock.
+    publish_locked(app, &mut data, correlation_id);
+}
+
+pub fn with_state<T>(app: &tauri::AppHandle, operation: impl FnOnce(&mut StateData) -> T) -> T {
+    let state = app.state::<AppState>();
+    let mut data = state.0.lock().unwrap();
+    operation(&mut data)
+}
+
+pub fn publish_locked(app: &tauri::AppHandle, data: &mut StateData, correlation_id: String) {
     emit(app, &data.next_event(correlation_id));
+}
+
+pub fn set_active_project_locked(
+    app: &tauri::AppHandle,
+    data: &mut StateData,
+    project: Option<ActiveProject>,
+    correlation_id: String,
+) -> bool {
+    if data.active_project == project {
+        return false;
+    }
+    data.active_project = project;
+    publish_locked(app, data, correlation_id);
+    true
 }
 
 #[cfg(debug_assertions)]
@@ -333,8 +368,14 @@ pub fn fixture(
             })
         }
         "clear" => data.active_context = None,
+        "clear_project" => data.active_project = None,
         "gap" => data.sequence += 1,
         "restart" => {
+            data.stream_id = format!("stream-{}", ipc::correlation_id());
+            data.sequence = 0;
+        }
+        "process_restart" => {
+            data.active_project = None;
             data.stream_id = format!("stream-{}", ipc::correlation_id());
             data.sequence = 0;
         }
@@ -357,6 +398,13 @@ mod tests {
     fn streams_sequences_and_public_snapshots_are_safe() {
         let mut state = StateData::default();
         assert_ne!(state.stream_id, StateData::default().stream_id);
+        state.active_context = Some(ActiveContext {
+            project_id: "synthetic-project".into(),
+            session_id: "synthetic-session".into(),
+            profile_id: "synthetic-profile".into(),
+            model_id: "synthetic-model".into(),
+            effort: Some("high".into()),
+        });
         let event = state.next_event(ipc::correlation_id());
         assert_eq!(event.sequence, 1);
         assert_eq!(state.next_event(ipc::correlation_id()).sequence, 2);
@@ -380,6 +428,8 @@ mod tests {
                 reason_code: Some("PA_STORAGE_NOT_INITIALIZED"),
             },
         );
+        assert!(snapshot.active_project.is_none());
+        assert!(snapshot.active_context.is_some());
         assert!(snapshot.overlay.draft.is_empty());
         assert_eq!(
             state
@@ -394,6 +444,27 @@ mod tests {
                 .overlay
                 .draft,
             "synthetic-private-draft"
+        );
+        assert!(
+            state
+                .snapshot(
+                    overlay::OverlayView {
+                        enabled: true,
+                        expanded: false,
+                        shortcut: "Ctrl+Alt+Space".into(),
+                        shortcut_error: None,
+                        window_error: None,
+                        draft: String::new(),
+                        tray_ready: true,
+                    },
+                    true,
+                    crate::storage::StorageHealth {
+                        state: "ready",
+                        reason_code: None,
+                    },
+                )
+                .active_context
+                .is_none()
         );
         assert_eq!(snapshot.sequence, 2);
         assert_eq!(snapshot.cc_switch.integration, "disabled");

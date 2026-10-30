@@ -68,6 +68,21 @@ test("runtime event validation rejects incompatible, oversized or unknown payloa
   assert.equal(isAppStatus(snapshot()), false);
 });
 
+test("app status carries a bounded process-only active project independently of task context", () => {
+  const services = ["desktop","ipc","events","overlay","storage","settings","logging","credentials","providers","codex","projects","tasks"]
+    .map(id => ({id,state:"ready",reasonCode:null}));
+  const status = {
+    apiVersion:1,streamId:"stream-ipc-1-ab-0",sequence:2,configState:"unconfigured",services,
+    ccSwitch:{management:"user_manual",integration:"disabled",readSupported:false,switchSupported:false},
+    activeContext:null,taskStatus:"idle",
+    overlay:{enabled:true,expanded:false,shortcut:"Ctrl+Alt+Space",shortcutError:null,windowError:null,draft:"",trayReady:true},
+    activeProject:{projectId:"c14e7b09-b84c-44bc-9b57-a7182e70b056",name:"synthetic-project"},
+  };
+  assert.equal(isAppStatus(status),true);
+  assert.equal(isAppStatus({...status,activeProject:{projectId:status.activeProject.projectId,name:"x\u0000"}}),false);
+  assert.equal(isAppStatus({...status,activeProject:{projectId:status.activeProject.projectId,name:"x".repeat(1025)}}),false);
+});
+
 test("transport timeout, AbortSignal and native exceptions have fixed errors and one send", async () => {
   let sends = 0;
   await assert.rejects(awaitTransport(() => { sends++; return new Promise(() => {}); }, { timeoutMs: 5 }), { message: TIMEOUT_ERROR });

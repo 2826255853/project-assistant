@@ -45,8 +45,9 @@ export async function verifySettingsDesktop({ evaluate, until, report, scenario,
       assert.equal(result.error.code,code); assert.equal(JSON.stringify(result).includes("synthetic-secret"),false);
     }
     assert.deepEqual(await get(),initial);
-    assert.equal((await evaluate(invoke("settings_get",{scope:"project",projectId:"unregistered"}))).error.code,"PA_IPC_PERMISSION_DENIED");
-    report.results.push("真实设置 IPC 默认值、非法键/值、类型/版本、整批拒绝和未授权项目范围通过");
+    assert.equal((await evaluate(invoke("settings_get",{scope:"project",projectId:"c14e7b09-b84c-44bc-9b57-a7182e70b056"}))).error.code,"PA_PROJECT_NOT_FOUND");
+    assert.equal((await evaluate(invoke("settings_update",{scope:"project",projectId:"unregistered",expectedRevision:1,changes:[{key:"project_sort",value:"name"}]}))).error.code,"PA_IPC_PERMISSION_DENIED");
+    report.results.push("全局设置批次校验通过；项目设置读取要求真实已登记授权，项目级写入仍被拒绝");
 
     await edit("#search-engine","google");
     await edit("#summary-days","60");

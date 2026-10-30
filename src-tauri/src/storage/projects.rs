@@ -333,6 +333,41 @@ impl<'a> ProjectRepository<'a> {
             retained_for_history: true,
         })
     }
+
+    pub fn project_settings(
+        &mut self,
+        id: &str,
+        correlation: &str,
+    ) -> Result<crate::project_contract::ProjectSettingsView, ErrorCode> {
+        let tx = self.connection.transaction().map_err(sql)?;
+        let r = record(&tx, id)?;
+        verify(&r)?;
+        let global_revision: u64 = tx
+            .query_row(
+                "SELECT revision FROM settings_revisions WHERE scope='global'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(sql)?
+            .try_into()
+            .map_err(|_| ErrorCode::SettingsCorrupt)?;
+        let revision: u64 = tx.query_row("SELECT coalesce(max(revision),1) FROM settings WHERE scope='project' AND project_id=?1", [id], |row| row.get::<_, i64>(0)).map_err(sql)?.try_into().map_err(|_| ErrorCode::SettingsCorrupt)?;
+        let values = crate::settings::project_read_view(&tx, id)?
+            .into_iter()
+            .map(|(_, setting)| setting)
+            .collect();
+        let view = crate::project_contract::ProjectSettingsView {
+            project_id: id.to_owned(),
+            revision,
+            global_revision,
+            values,
+        };
+        view.validate_wire()?;
+        let at = clock()?;
+        audit(&tx, correlation, id, "config_read", at)?;
+        tx.commit().map_err(sql)?;
+        Ok(view)
+    }
 }
 
 #[cfg(test)]
