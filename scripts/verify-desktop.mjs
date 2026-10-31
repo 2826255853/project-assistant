@@ -151,7 +151,7 @@ try {
     await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
     await until(() => evaluate("document.querySelector('.main-area')?.dataset.page"), (page) => page === "projects");
     assert.equal(await evaluate("document.activeElement.id"), "page-heading");
-    assert.match(await evaluate("document.querySelector('[data-testid=state-empty]').textContent"), /还没有登记项目/);
+    assert.equal(await evaluate("document.querySelector('[data-testid=state-empty] h2')?.textContent"), "还没有登记项目");
     assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=project-add]'))"), true);
     assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=project-search]'))"), true);
     report.results.push("键盘 Enter 可打开项目工作区，焦点移至标题并显示可操作空状态、添加与搜索控件");

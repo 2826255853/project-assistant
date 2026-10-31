@@ -86,7 +86,7 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
   await until(() => evaluate("document.querySelector('[data-testid=project-detail] h3')?.textContent"), name => name === "project-added-through-ui");
   await evaluate("document.querySelector('[data-testid=project-select-active]').click()");
   await until(async () => (await call("app_get_status")).data.activeProject?.projectId, activeId => activeId === added.id);
-  await evaluate("document.querySelector('[data-testid=project-open-directory]').click()");
+  await evaluate("document.querySelector('[data-testid=project-open-directory]')?.click()");
   await until(async () => (await call("project_get",{projectId:added.id})).data.lastUsedAt, value => value !== null);
   await until(() => evaluate("Boolean(document.querySelector('[data-testid=project-pick-file]') && !document.querySelector('[data-testid=project-pick-file]').disabled)"), Boolean);
   await evaluate("document.querySelector('[data-testid=project-pick-file]').click()");
