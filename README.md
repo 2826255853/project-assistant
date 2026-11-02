@@ -1,5 +1,7 @@
 # 本机项目助手 · 桌面基础
 
+阶段 3 步骤 3.1（S3-01）已于 2026-11-02 完成任务/会话/审批契约和功能门定义。src/ipc/taskContracts.ts 仅扩展未来 DTO；task_start、session、approval、task 内容/事件与 overlay 规划命令仍未进入 IPC client、Rust handler/registry 或 capability。npm run build 与 npm run test:ipc（36/36）通过，只验证类型构建、契约和未开放断言；不代表任务运行时、schema 迁移、真实 Codex 网关或 M3 已通过。详见 [步骤 3.1](docs/phase-3/step-3.1.md) 和 [计划第 23 章](计划文档.txt)。
+
 阶段 2 步骤 2.6（S2-06）已于 2026-10-28 接入 main-only 正式 Rust Git 摘要服务：安全发现 Git、授权目录复核、固定只读参数、受控环境、有界进程与输出、5 秒内存缓存和失败降级。其当轮验收报告 `artifacts/phase-2-6/report.json` 通过 156 项 Rust、33 项 IPC、15 项离线 Codex、52 项存储及 built/dev 桌面，覆盖空仓库、分支、detached HEAD、工作区变更、非仓库、缺失 Git、超时、异常输出和缓存刷新。该轮页面尚未接入，现由 2.7 完成。本机 Windows x64 与标准系统 Git 安装范围通过；其他 Windows 版本、ARM64、缺少 Git 的干净机器和用户级/自定义 Git 安装未实测。详细边界见 [步骤 2.6](docs/phase-2/step-2.6.md)。
 
 步骤 2.8（S2-08）已**通过（活动项目与设置读取范围）**：主窗口可显式选择活动项目，状态独立于 `ActiveContext`，通过既有无载荷事件同步到悬浮入口；项目移除、路径失效和进程重启会清除活动状态，近期使用记录仍保留。`settings_get` 的 project scope 只读复核已登记授权并逐项返回项目值/全局继承来源，项目级写入仍拒绝；built/dev 与项目、IPC、Rust、存储回归见 `docs/phase-2/step-2.8.md` 和 `artifacts/phase-2-8/report.json`。原生选择器物理点验、阶段完整回归仍留待 2.9，M2 未通过。

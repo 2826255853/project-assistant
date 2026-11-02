@@ -18,6 +18,8 @@
 - 步骤 2.5（S2-05）于 2026-10-28 有条件通过：新增 main-only `project_open_directory/project_open_file/project_pick_file`，默认程序/结构化编辑器真实交付、相对文件结果接受边界、固定失败和无自动重试。最终目标通过只回滚的 NTFS/TxF 元数据保护，补上属性句柄可绕过普通共享锁原地设置重解析点的漏洞；保护不可用、ReFS、属性写权限不足等拒绝打开，不降级。`verify:projects` 最新为 `artifacts/phase-2-5/report.json`，151 Rust、33 IPC、15 离线、52 存储及 built/dev 通过。目录/中文文本与真实合成 PE 编辑器均验证系统接受，未声明外部加载完成；ReFS 打开未实测，原生选择器人工点验仍在 2.9。实现与平台限制见 `docs/phase-2/step-2.5.md`，后续为 2.6 Git；M2 未通过。上面 2.3/2.4 的报告及待验说明保留当轮历史范围。
 - 步骤 2.9（S2-09）于 2026-10-30 完成自动回归与阶段 3 移交范围：`npm run verify:projects` 已统一执行前端/Rust/IPC/存储、项目 built/dev 桌面闭环及设置、日志、凭据、隔离、provider 回归，最新 `artifacts/phase-2/report.json` 为通过（159 Rust、5 个阶段 1 回归、4 项人工边界）。原生选择器物理点验、真实中文 IME、外部程序完成加载、阶段 1 托盘/多显示器/DPI 和其他平台仍需人工或平台复核；阶段 2/M2 未因自动报告整体通过而关闭。
 
+阶段 3 步骤 3.1（S3-01）于 2026-11-02 完成未来任务/会话/审批契约、状态机、权限与功能门，详见 `docs/phase-3/step-3.1.md`。当前仅扩展未实现 DTO，并通过静态断言确认任务命令未进入调用器、Rust 注册或 capability；`npm run build` 与 `npm run test:ipc`（36/36）通过。未实现任务运行时、迁移、网关或 M3；不得将契约完成视为真实任务可用。
+
 优先阅读 `README.md`、`计划文档.txt` 第 21/22 节、`docs/phase-2/step-2.5.md`、`docs/phase-2/step-2.4.md`、`docs/phase-2/step-2.3.md`、`docs/phase-2/step-2.1.md`、`docs/phase-1/step-1.7.md` 和 `step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
 
 ## 已确认的产品约定
