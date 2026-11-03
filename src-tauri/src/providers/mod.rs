@@ -82,3 +82,13 @@ pub(crate) fn uuid() -> Result<String, ErrorCode> {
         b[15]
     ))
 }
+
+/// Revalidate a complete project default against current owned profile,
+/// credential state and unexpired capability evidence. This does not return or
+/// read secret material; task admission repeats the check before snapshotting.
+pub(crate) fn validate_project_selection(
+    connection: &Connection,
+    selection: &Selection,
+) -> Result<(), ErrorCode> {
+    repository::validate_selection(connection, selection, now()?).map(|_| ())
+}

@@ -727,6 +727,28 @@ async fn settings_update(
 }
 
 #[tauri::command]
+async fn project_settings_update(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<project_contract::ProjectSettingsView> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        ipc::authorize(&window, true)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+            .len()
+            > 8192
+        {
+            return Err(ipc::ErrorCode::InputTooLarge);
+        }
+        let params: project_contract::ProjectAiDefaultsUpdate = ipc::parse_request(request)?;
+        projects::update_project_ai_defaults(&app, params, &id)
+    })();
+    complete(&app, "project_settings_update", id, result)
+}
+
+#[tauri::command]
 async fn overlay_get(
     request: serde_json::Value,
     app: tauri::AppHandle,
@@ -824,6 +846,14 @@ async fn ipc_fixture(
                         "CREATE TEMP TRIGGER fail_audit_verify BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'synthetic-secret-DO-NOT-LOG'); END;"
                     } else { "DROP TRIGGER fail_audit_verify;" }).map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })
                 }).map_err(|_| ipc::ErrorCode::AuditWriteFailed)
+            }
+            "ai_settings_sql_fail" | "ai_settings_sql_restore" => {
+                let fail = params.action == "ai_settings_sql_fail";
+                app.state::<storage::StorageState>().with_storage(|storage| {
+                    storage.connection.execute_batch(if fail {
+                        "CREATE TEMP TRIGGER fail_project_ai_setting BEFORE INSERT ON settings WHEN NEW.scope='project' AND NEW.key='ai_defaults' BEGIN SELECT RAISE(ABORT,'synthetic-secret-DO-NOT-LOG'); END;"
+                    } else { "DROP TRIGGER fail_project_ai_setting;" }).map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })
+                }).map_err(|_| ipc::ErrorCode::SettingsStorageFailed)
             }
             "settings_fail_write" | "settings_restore_write" => {
                 let fail = params.action == "settings_fail_write";
@@ -1064,6 +1094,7 @@ pub fn run() {
             app_get_status,
             settings_get,
             settings_update,
+            project_settings_update,
             logs_get_status,
             logs_clear,
             providers_list,

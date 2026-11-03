@@ -31,6 +31,7 @@ const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMa
   settings_get: value => isSettingsView(value) || isProjectSettingsView(value), settings_update: isSettingsView,
   logs_get_status: isLogStatus, logs_clear: isLogStatus,
   credential_put: isCredentialMutation, credential_remove: isCredentialMutation,
+  project_settings_update: isProjectSettingsView,
 };
 export function call(command: "settings_get", params: { scope: "global" }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SettingsView>;
 export function call(command: "settings_get", params: { scope: "project"; projectId: string }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ProjectSettingsView>;

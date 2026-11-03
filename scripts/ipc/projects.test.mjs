@@ -4,7 +4,7 @@ import { errorForCode } from "../../src/ipc/errors.ts";
 import {
   isActiveProject, isGitSummary, isProjectFileParams, isProjectFilePickerResult, isProjectListPage,
   isProjectListParams, isProjectOpenAccepted, isProjectPickerResult, isProjectSettingsView,
-  isProjectView, isRemovedProject, isSelectedProject,
+  isProjectAiDefaultsUpdateParams, isProjectView, isRemovedProject, isSelectedProject,
   projectCommands, projectErrorCodes,
 } from "../../src/ipc/projects.ts";
 
@@ -67,6 +67,13 @@ test("Git degradation and project settings are typed data without raw output", (
   assert.equal(isProjectSettingsView({ projectId, revision: 1, globalRevision: 2, values: [
     { key: "search_engine", value: "bing", source: "global", path: "C:\\private" },
   ] }), false);
+  const selection = { profileId: "profile-1", expectedRevision: 2, modelId: "model-x", effort: null };
+  assert.equal(isProjectAiDefaultsUpdateParams({ projectId, expectedRevision: 1, expectedGlobalRevision: 2, selection }), true);
+  assert.equal(isProjectAiDefaultsUpdateParams({ projectId, expectedRevision: 1, expectedGlobalRevision: 2, selection: null }), true);
+  assert.equal(isProjectAiDefaultsUpdateParams({ projectId, expectedRevision: 1, expectedGlobalRevision: 2, selection }), true);
+  assert.equal(isProjectAiDefaultsUpdateParams({ projectId, expectedRevision: 1, expectedGlobalRevision: 2, selection, secret: "synthetic-secret-sentinel" }), false);
+  assert.equal(isProjectAiDefaultsUpdateParams({ projectId, expectedRevision: 1, expectedGlobalRevision: 2 }), false);
+  assert.equal(isProjectAiDefaultsUpdateParams({ projectId, expectedRevision: 0, expectedGlobalRevision: 2, selection: null }), false);
 });
 
 test("fixed project errors are local catalog entries", () => {
@@ -77,6 +84,7 @@ test("fixed project errors are local catalog entries", () => {
 test("project DTO command catalog includes current and future commands", async () => {
   assert.deepEqual(projectCommands, [
     "projects_add_from_picker", "projects_list", "project_get", "project_select", "project_remove",
+    "project_settings_update",
     "project_open_directory", "project_pick_file", "project_open_file", "project_git_summary",
   ]);
 });

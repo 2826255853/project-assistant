@@ -518,6 +518,31 @@ pub fn project_settings(
     }
 }
 
+pub fn update_project_ai_defaults(
+    app: &tauri::AppHandle,
+    request: crate::project_contract::ProjectAiDefaultsUpdate,
+    correlation: &str,
+) -> Result<crate::project_contract::ProjectSettingsView, ErrorCode> {
+    #[cfg(windows)]
+    {
+        let id = request.project_id.clone();
+        let result = with_repository(app, |storage| {
+            storage.projects().update_ai_defaults(request, correlation)
+        });
+        if let Err(code) = result {
+            reconcile_path_failure(app, &id, correlation, code);
+            return Err(code);
+        }
+        crate::app_state::publish(app, correlation.into());
+        result
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, request, correlation);
+        Err(ErrorCode::ProjectPathUnavailable)
+    }
+}
+
 #[cfg(windows)]
 pub fn refresh_active(app: &tauri::AppHandle) {
     let correlation = crate::ipc::correlation_id();
@@ -644,6 +669,26 @@ pub(crate) fn fixture(app: &tauri::AppHandle, action: &str) -> Result<(), ErrorC
             "project_git_dirty" => {
                 std::fs::write(source.join("git-dirty-fixture.txt"), "synthetic git change")
                     .map_err(|_| ErrorCode::ProjectPathUnavailable)?;
+            }
+            "project_ai_seed_profile" => {
+                let at = crate::providers::now()?;
+                storage.connection.execute(
+                    "INSERT INTO provider_profiles(id,name,source_kind,adapter_kind,external_profile_id,endpoint,endpoint_origin,wire_api,auth_kind,credential_ref,credential_revision,default_model,default_effort,enabled,config_revision,created_at,updated_at,credential_status) VALUES('synthetic-project-profile','Synthetic project profile','relay','self_managed',NULL,'https://relay.example.invalid/v1','https://relay.example.invalid','responses','api_key','credential:synthetic-project-profile:1',1,NULL,NULL,1,2,?1,?1,'configured_unverified')",
+                    [at],
+                ).map_err(|_| ErrorCode::SettingsStorageFailed)?;
+                storage.connection.execute(
+                    "INSERT INTO model_capabilities(profile_id,model_id,effort,context_window,is_default,source_kind,source_version,profile_revision,observed_at,expires_at) VALUES('synthetic-project-profile','synthetic-project-model','high',NULL,0,'cli_catalog',?1,2,?2,?3)",
+                    rusqlite::params![format!("{}:synthetic-project-fixture", crate::owned_process::ADAPTER_VERSION), at, at + crate::providers::CAPABILITY_TTL],
+                ).map_err(|_| ErrorCode::SettingsStorageFailed)?;
+            }
+            "project_ai_credential_missing" => {
+                storage.connection.execute("UPDATE provider_profiles SET credential_status='missing' WHERE id='synthetic-project-profile'", []).map_err(|_| ErrorCode::SettingsStorageFailed)?;
+            }
+            "project_ai_credential_restore" => {
+                storage.connection.execute("UPDATE provider_profiles SET credential_status='configured_unverified' WHERE id='synthetic-project-profile'", []).map_err(|_| ErrorCode::SettingsStorageFailed)?;
+            }
+            "project_ai_profile_revision" => {
+                storage.connection.execute("UPDATE provider_profiles SET config_revision=config_revision+1 WHERE id='synthetic-project-profile'", []).map_err(|_| ErrorCode::SettingsStorageFailed)?;
             }
             _ => return Err(ErrorCode::InvalidRequest),
         }

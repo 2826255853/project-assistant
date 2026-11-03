@@ -59,6 +59,52 @@ fn fresh_database_constraints_and_reopen() {
 }
 
 #[test]
+fn project_settings_revision_migration_backfills_rows_and_preserves_v5_backup() {
+    let directory = Fixture::new();
+    let v5 = Storage::open_with(&directory.0, &MIGRATIONS[..5]).unwrap();
+    v5.connection.execute(
+        "INSERT INTO projects(id,canonical_path,path_key,name,created_at,updated_at) VALUES('legacy-project','C:/legacy','legacy-key','Legacy',1,1)",
+        [],
+    ).unwrap();
+    v5.connection.execute(
+        "INSERT INTO settings(id,scope,project_id,key,value_text,revision,updated_at) VALUES('legacy-project-search','project','legacy-project','search_engine','google',4,1)",
+        [],
+    ).unwrap();
+    drop(v5);
+
+    let upgraded = Storage::open(&directory.0).unwrap();
+    assert_eq!(
+        upgraded
+            .connection
+            .query_row(
+                "SELECT revision FROM project_settings_revisions WHERE project_id='legacy-project'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        4,
+    );
+    let backup = fs::read_dir(directory.0.join("backups"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let backup = Connection::open_with_flags(backup, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(
+        backup
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        5
+    );
+    assert!(
+        backup
+            .prepare("SELECT revision FROM project_settings_revisions")
+            .is_err()
+    );
+}
+
+#[test]
 fn successful_upgrade_backs_up_committed_wal() {
     let (directory, storage) = fixture();
     // Keep this writer open: its committed data still lives in WAL.

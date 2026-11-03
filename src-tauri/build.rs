@@ -14,6 +14,7 @@ fn main() {
             "app_get_status",
             "settings_get",
             "settings_update",
+            "project_settings_update",
             "logs_get_status",
             "logs_clear",
             "providers_list",

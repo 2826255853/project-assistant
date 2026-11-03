@@ -351,23 +351,130 @@ impl<'a> ProjectRepository<'a> {
             .map_err(sql)?
             .try_into()
             .map_err(|_| ErrorCode::SettingsCorrupt)?;
-        let revision: u64 = tx.query_row("SELECT coalesce(max(revision),1) FROM settings WHERE scope='project' AND project_id=?1", [id], |row| row.get::<_, i64>(0)).map_err(sql)?.try_into().map_err(|_| ErrorCode::SettingsCorrupt)?;
-        let values = crate::settings::project_read_view(&tx, id)?
-            .into_iter()
-            .map(|(_, setting)| setting)
-            .collect();
-        let view = crate::project_contract::ProjectSettingsView {
-            project_id: id.to_owned(),
-            revision,
-            global_revision,
-            values,
-        };
-        view.validate_wire()?;
+        let view = project_settings_view(&tx, id, global_revision)?;
         let at = clock()?;
         audit(&tx, correlation, id, "config_read", at)?;
         tx.commit().map_err(sql)?;
         Ok(view)
     }
+
+    /// Save one whole project AI selection or clear it to inherit globally.
+    /// Project/global revisions, provider validation, the setting and audit
+    /// fact share one IMMEDIATE transaction.
+    pub fn update_ai_defaults(
+        &mut self,
+        request: crate::project_contract::ProjectAiDefaultsUpdate,
+        correlation: &str,
+    ) -> Result<crate::project_contract::ProjectSettingsView, ErrorCode> {
+        request.validate()?;
+        super::repositories::validate_correlation_id(correlation)
+            .map_err(|_| ErrorCode::AuditWriteFailed)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        let r = record(&tx, &request.project_id)?;
+        verify(&r)?;
+        let project_revision: u64 = tx
+            .query_row(
+                "SELECT revision FROM project_settings_revisions WHERE project_id=?1",
+                [&request.project_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(sql)?
+            .try_into()
+            .map_err(|_| ErrorCode::SettingsCorrupt)?;
+        if project_revision != request.expected_revision {
+            return Err(ErrorCode::ProjectConflictRevision);
+        }
+        let global_revision: u64 = tx
+            .query_row(
+                "SELECT revision FROM settings_revisions WHERE scope='global'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(sql)?
+            .try_into()
+            .map_err(|_| ErrorCode::SettingsCorrupt)?;
+        if global_revision != request.expected_global_revision {
+            return Err(ErrorCode::RevisionConflict);
+        }
+        let next_revision = project_revision
+            .checked_add(1)
+            .filter(|value| *value <= MAX_SAFE_INTEGER)
+            .ok_or(ErrorCode::ProjectConflictRevision)?;
+        if let Some(selection) = &request.selection {
+            crate::providers::validate_project_selection(&tx, selection)?;
+        }
+        let at = clock()?;
+        match &request.selection {
+            Some(selection) => {
+                let setting_id = format!("project-{}-ai_defaults", request.project_id);
+                tx.execute(
+                    "INSERT INTO settings(id,scope,project_id,key,profile_id,model_id,effort,revision,updated_at) VALUES(?1,'project',?2,'ai_defaults',?3,?4,?5,?6,?7) ON CONFLICT(project_id,key) WHERE scope='project' DO UPDATE SET profile_id=excluded.profile_id,model_id=excluded.model_id,effort=excluded.effort,revision=excluded.revision,updated_at=excluded.updated_at",
+                    params![setting_id,request.project_id,selection.profile_id,selection.model_id,selection.effort,next_revision,at],
+                ).map_err(sql)?;
+                tx.execute(
+                    "INSERT INTO ai_default_revisions(setting_id,profile_revision) SELECT id,?1 FROM settings WHERE scope='project' AND project_id=?2 AND key='ai_defaults' ON CONFLICT(setting_id) DO UPDATE SET profile_revision=excluded.profile_revision",
+                    params![selection.expected_revision,request.project_id],
+                ).map_err(sql)?;
+            }
+            None => {
+                tx.execute(
+                    "DELETE FROM settings WHERE scope='project' AND project_id=?1 AND key='ai_defaults'",
+                    [&request.project_id],
+                )
+                .map_err(sql)?;
+            }
+        }
+        tx.execute(
+            "UPDATE project_settings_revisions SET revision=?1 WHERE project_id=?2 AND revision=?3",
+            params![next_revision, request.project_id, project_revision],
+        )
+        .map_err(sql)?;
+        if tx.changes() != 1 {
+            return Err(ErrorCode::ProjectConflictRevision);
+        }
+        audit(
+            &tx,
+            correlation,
+            &request.project_id,
+            "project_ai_defaults_update",
+            at,
+        )?;
+        let view = project_settings_view(&tx, &request.project_id, global_revision)?;
+        view.validate_wire()?;
+        tx.commit().map_err(sql)?;
+        Ok(view)
+    }
+}
+
+fn project_settings_view(
+    connection: &Connection,
+    id: &str,
+    global_revision: u64,
+) -> Result<crate::project_contract::ProjectSettingsView, ErrorCode> {
+    let revision: u64 = connection
+        .query_row(
+            "SELECT revision FROM project_settings_revisions WHERE project_id=?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(sql)?
+        .try_into()
+        .map_err(|_| ErrorCode::SettingsCorrupt)?;
+    let values = crate::settings::project_read_view(connection, id)?
+        .into_iter()
+        .map(|(_, setting)| setting)
+        .collect();
+    let view = crate::project_contract::ProjectSettingsView {
+        project_id: id.to_owned(),
+        revision,
+        global_revision,
+        values,
+    };
+    view.validate_wire()?;
+    Ok(view)
 }
 
 #[cfg(test)]

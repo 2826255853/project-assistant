@@ -78,6 +78,12 @@ export function isProjectSettingsView(value: unknown): value is ProjectSettingsV
   return value.values.every(isProjectSetting) && new Set(value.values.map(setting => isRecord(setting) ? setting.key : null)).size === value.values.length;
 }
 
+export function isProjectAiDefaultsUpdateParams(value: unknown): value is CommandMap["project_settings_update"]["params"] {
+  if (!isRecord(value) || !keys(value, ["projectId", "expectedRevision", "expectedGlobalRevision", "selection"]) ||
+    !uuid(value.projectId) || !revision(value.expectedRevision) || !revision(value.expectedGlobalRevision)) return false;
+  return value.selection === null || isAiSelection(value.selection);
+}
+
 export function isProjectPickerResult(value: unknown): value is CommandMap["projects_add_from_picker"]["data"] {
   if (!isRecord(value) || typeof value.outcome !== "string") return false;
   if (value.outcome === "cancelled") return keys(value, ["outcome"]);
@@ -129,7 +135,7 @@ function validWindowsComponent(value: string): boolean {
 }
 
 export const projectCommands: readonly (keyof CommandMap)[] = [
-  "projects_add_from_picker", "projects_list", "project_get", "project_select", "project_remove",
+  "projects_add_from_picker", "projects_list", "project_get", "project_select", "project_remove", "project_settings_update",
   "project_open_directory", "project_pick_file", "project_open_file", "project_git_summary",
 ];
 

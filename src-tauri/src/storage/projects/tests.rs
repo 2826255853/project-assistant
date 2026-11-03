@@ -49,6 +49,18 @@ pub(super) fn count(db: &Storage, table: &str) -> i64 {
         .unwrap()
 }
 
+fn seed_project_ai_profile(db: &mut Storage) {
+    let at = crate::providers::now().unwrap();
+    db.connection.execute(
+        "INSERT INTO provider_profiles(id,name,source_kind,adapter_kind,external_profile_id,endpoint,endpoint_origin,wire_api,auth_kind,credential_ref,credential_revision,default_model,default_effort,enabled,config_revision,created_at,updated_at,credential_status) VALUES('synthetic-project-profile','Synthetic project profile','relay','self_managed',NULL,'https://relay.example.invalid/v1','https://relay.example.invalid','responses','api_key','credential:synthetic-project-profile:1',1,NULL,NULL,1,2,?1,?1,'configured_unverified')",
+        [at],
+    ).unwrap();
+    db.connection.execute(
+        "INSERT INTO model_capabilities(profile_id,model_id,effort,context_window,is_default,source_kind,source_version,profile_revision,observed_at,expires_at) VALUES('synthetic-project-profile','synthetic-project-model','high',NULL,0,'cli_catalog',?1,2,?2,?3)",
+        rusqlite::params![format!("{}:synthetic-project-fixture", crate::owned_process::ADAPTER_VERSION), at, at + crate::providers::CAPABILITY_TTL],
+    ).unwrap();
+}
+
 #[test]
 fn cancellation_dedup_detail_and_reads_do_not_count_as_usage() {
     let f = Fixture::new();
@@ -146,6 +158,12 @@ fn project_settings_read_requires_a_grant_marks_each_source_and_audits_without_u
             rusqlite::params![project.id, crate::storage::now_ms()],
         )
         .unwrap();
+    db.connection
+        .execute(
+            "UPDATE project_settings_revisions SET revision=2 WHERE project_id=?1",
+            [&project.id],
+        )
+        .unwrap();
     let next = db
         .projects()
         .project_settings(&project.id, &correlation_id())
@@ -181,6 +199,287 @@ fn project_settings_read_requires_a_grant_marks_each_source_and_audits_without_u
         .unwrap();
     assert_eq!(reads, 2);
     assert_eq!(count(&db, "project_usage"), 0);
+    f.unchanged();
+}
+
+#[test]
+fn project_ai_defaults_save_clear_and_preserve_monotonic_revision_with_atomic_audit() {
+    let f = Fixture::new();
+    let mut db = f.db();
+    let project = f.register(&mut db);
+    seed_project_ai_profile(&mut db);
+    let selection = crate::providers::Selection {
+        profile_id: "synthetic-project-profile".into(),
+        expected_revision: 2,
+        model_id: "synthetic-project-model".into(),
+        effort: Some("high".into()),
+    };
+    let saved = db
+        .projects()
+        .update_ai_defaults(
+            crate::project_contract::ProjectAiDefaultsUpdate {
+                project_id: project.id.clone(),
+                expected_revision: 1,
+                expected_global_revision: 1,
+                selection: Some(selection.clone()),
+            },
+            &correlation_id(),
+        )
+        .unwrap();
+    assert_eq!(saved.revision, 2);
+    assert_eq!(saved.global_revision, 1);
+    let ai = saved
+        .values
+        .iter()
+        .find(|setting| {
+            matches!(
+                setting.setting,
+                crate::project_contract::ProjectSettingKind::AiDefaults(_)
+            )
+        })
+        .unwrap();
+    assert_eq!(ai.source, crate::project_contract::SettingSource::Project);
+    assert_eq!(
+        ai.setting,
+        crate::project_contract::ProjectSettingKind::AiDefaults(Some(
+            crate::project_contract::ProjectAiSelection {
+                profile_id: selection.profile_id.clone(),
+                expected_revision: selection.expected_revision as u64,
+                model_id: selection.model_id.clone(),
+                effort: selection.effort.clone(),
+            },
+        ))
+    );
+    assert_eq!(count(&db, "ai_default_revisions"), 1);
+    assert_eq!(db.connection.query_row(
+        "SELECT count(*) FROM audit_events WHERE event_kind='project_ai_defaults_update' AND project_id=?1 AND profile_id IS NULL AND model_id IS NULL AND effort IS NULL",
+        [&project.id], |row| row.get::<_, i64>(0),
+    ).unwrap(), 1);
+    db.connection
+        .execute(
+            "UPDATE provider_profiles SET config_revision=3 WHERE id=?1",
+            ["synthetic-project-profile"],
+        )
+        .unwrap();
+    assert_eq!(
+        db.projects()
+            .update_ai_defaults(
+                crate::project_contract::ProjectAiDefaultsUpdate {
+                    project_id: project.id.clone(),
+                    expected_revision: 2,
+                    expected_global_revision: 1,
+                    selection: Some(selection.clone()),
+                },
+                &correlation_id(),
+            )
+            .err(),
+        Some(ErrorCode::RevisionConflict)
+    );
+    assert_eq!(
+        count(&db, "audit_events"),
+        2,
+        "invalid profile revision writes no update audit"
+    );
+
+    let inherited = db
+        .projects()
+        .update_ai_defaults(
+            crate::project_contract::ProjectAiDefaultsUpdate {
+                project_id: project.id.clone(),
+                expected_revision: 2,
+                expected_global_revision: 1,
+                selection: None,
+            },
+            &correlation_id(),
+        )
+        .unwrap();
+    assert_eq!(inherited.revision, 3);
+    assert_eq!(
+        inherited
+            .values
+            .iter()
+            .find(|setting| matches!(
+                setting.setting,
+                crate::project_contract::ProjectSettingKind::AiDefaults(_)
+            ))
+            .unwrap()
+            .source,
+        crate::project_contract::SettingSource::Global
+    );
+    assert_eq!(count(&db, "ai_default_revisions"), 0);
+    drop(db);
+    let mut reopened = f.db();
+    assert_eq!(
+        reopened
+            .projects()
+            .project_settings(&project.id, &correlation_id())
+            .unwrap()
+            .revision,
+        3
+    );
+    f.unchanged();
+}
+
+#[test]
+fn project_ai_defaults_conflicts_authorization_and_write_failures_leave_settings_unchanged() {
+    let f = Fixture::new();
+    let mut db = f.db();
+    let project = f.register(&mut db);
+    seed_project_ai_profile(&mut db);
+    let selection = crate::providers::Selection {
+        profile_id: "synthetic-project-profile".into(),
+        expected_revision: 2,
+        model_id: "synthetic-project-model".into(),
+        effort: Some("high".into()),
+    };
+    let update = |expected_revision, expected_global_revision| {
+        crate::project_contract::ProjectAiDefaultsUpdate {
+            project_id: project.id.clone(),
+            expected_revision,
+            expected_global_revision,
+            selection: Some(selection.clone()),
+        }
+    };
+    assert_eq!(
+        db.projects()
+            .update_ai_defaults(update(2, 1), &correlation_id())
+            .err(),
+        Some(ErrorCode::ProjectConflictRevision)
+    );
+    db.connection
+        .execute(
+            "UPDATE settings_revisions SET revision=2 WHERE scope='global'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        db.projects()
+            .update_ai_defaults(update(1, 1), &correlation_id())
+            .err(),
+        Some(ErrorCode::RevisionConflict)
+    );
+    assert_eq!(count(&db, "settings"), 0);
+    assert_eq!(count(&db, "project_settings_revisions"), 1);
+
+    db.connection.execute_batch("CREATE TEMP TRIGGER reject_project_settings_audit BEFORE INSERT ON audit_events WHEN NEW.event_kind='project_ai_defaults_update' BEGIN SELECT RAISE(ABORT,'synthetic-private-setting'); END;").unwrap();
+    assert_eq!(
+        db.projects()
+            .update_ai_defaults(update(1, 2), &correlation_id())
+            .err(),
+        Some(ErrorCode::AuditWriteFailed)
+    );
+    assert_eq!(count(&db, "settings"), 0);
+    assert_eq!(
+        db.connection
+            .query_row(
+                "SELECT revision FROM project_settings_revisions WHERE project_id=?1",
+                [&project.id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    db.connection.execute_batch("DROP TRIGGER reject_project_settings_audit; CREATE TEMP TRIGGER reject_project_setting BEFORE INSERT ON settings WHEN NEW.scope='project' BEGIN SELECT RAISE(ABORT,'synthetic-private-setting'); END;").unwrap();
+    assert_eq!(
+        db.projects()
+            .update_ai_defaults(update(1, 2), &correlation_id())
+            .err(),
+        Some(ErrorCode::SettingsStorageFailed)
+    );
+    assert_eq!(count(&db, "settings"), 0);
+    assert_eq!(
+        count(&db, "audit_events"),
+        1,
+        "the only audit row is the original project grant"
+    );
+    f.unchanged();
+}
+
+#[test]
+#[ignore = "invoked by project_ai_defaults_survive_an_independent_process_restart"]
+fn project_ai_defaults_persistence_worker() {
+    let root = PathBuf::from(std::env::var_os("PA_PROJECT_TEST_ROOT").unwrap());
+    let f = Fixture { root };
+    let mut db = f.db();
+    let id = fs::read_to_string(f.root.join("project-ai-id")).unwrap();
+    let view = db
+        .projects()
+        .project_settings(&id, &correlation_id())
+        .unwrap();
+    assert_eq!(view.revision, 2);
+    let ai = view
+        .values
+        .iter()
+        .find(|setting| {
+            matches!(
+                setting.setting,
+                crate::project_contract::ProjectSettingKind::AiDefaults(_)
+            )
+        })
+        .unwrap();
+    assert_eq!(ai.source, crate::project_contract::SettingSource::Project);
+    assert_eq!(
+        ai.setting,
+        crate::project_contract::ProjectSettingKind::AiDefaults(Some(
+            crate::project_contract::ProjectAiSelection {
+                profile_id: "synthetic-project-profile".into(),
+                expected_revision: 2,
+                model_id: "synthetic-project-model".into(),
+                effort: Some("high".into()),
+            },
+        ))
+    );
+    drop(db);
+    std::mem::forget(f);
+}
+
+#[test]
+fn project_ai_defaults_survive_an_independent_process_restart() {
+    let f = Fixture::new();
+    let mut db = f.db();
+    let project = f.register(&mut db);
+    seed_project_ai_profile(&mut db);
+    let saved = db
+        .projects()
+        .update_ai_defaults(
+            crate::project_contract::ProjectAiDefaultsUpdate {
+                project_id: project.id.clone(),
+                expected_revision: 1,
+                expected_global_revision: 1,
+                selection: Some(crate::providers::Selection {
+                    profile_id: "synthetic-project-profile".into(),
+                    expected_revision: 2,
+                    model_id: "synthetic-project-model".into(),
+                    effort: Some("high".into()),
+                }),
+            },
+            &correlation_id(),
+        )
+        .unwrap();
+    assert_eq!(saved.revision, 2);
+    assert_eq!(
+        db.projects()
+            .get(&project.id, &correlation_id())
+            .unwrap()
+            .revision,
+        project.revision
+    );
+    fs::write(f.root.join("project-ai-id"), &project.id).unwrap();
+    drop(db);
+    let child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "storage::projects::tests::project_ai_defaults_persistence_worker",
+        ])
+        .env("PA_PROJECT_TEST_ROOT", &f.root)
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "independent process failed: {}",
+        String::from_utf8_lossy(&child.stdout)
+    );
     f.unchanged();
 }
 

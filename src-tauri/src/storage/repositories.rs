@@ -428,6 +428,7 @@ fn validate_event(event: &AuditEventInput<'_>) -> Result<(), StorageError> {
                 | "approval_decision"
                 | "task_transition"
                 | "storage_recovery"
+                | "project_ai_defaults_update"
         )
         || !matches!(
             event.outcome,

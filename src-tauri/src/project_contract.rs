@@ -257,6 +257,44 @@ pub struct ProjectSettingsView {
     pub values: Vec<ProjectSetting>,
 }
 
+/// Project AI-default mutation is deliberately narrower than global settings:
+/// it accepts one complete validated selection or null to inherit globally.
+fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectAiDefaultsUpdate {
+    pub project_id: String,
+    pub expected_revision: u64,
+    pub expected_global_revision: u64,
+    #[serde(deserialize_with = "required_option")]
+    pub selection: Option<crate::providers::Selection>,
+}
+
+impl ProjectAiDefaultsUpdate {
+    pub fn validate(&self) -> Result<(), crate::ipc::ErrorCode> {
+        ProjectIdRequest {
+            project_id: self.project_id.clone(),
+        }
+        .validate()?;
+        if !(1..=MAX_SAFE_INTEGER).contains(&self.expected_revision)
+            || !(1..=MAX_SAFE_INTEGER).contains(&self.expected_global_revision)
+        {
+            return Err(crate::ipc::ErrorCode::InvalidRequest);
+        }
+        if let Some(selection) = &self.selection {
+            selection.validate()?;
+        }
+        Ok(())
+    }
+}
+
 impl ProjectSettingsView {
     pub fn validate_wire(&self) -> Result<(), crate::ipc::ErrorCode> {
         if !valid_uuid(&self.project_id)
@@ -800,6 +838,35 @@ mod tests {
             ..settings
         };
         assert!(duplicate.validate_wire().is_err());
+    }
+
+    #[test]
+    fn project_ai_defaults_update_requires_explicit_complete_selection_or_null() {
+        let id = "c14e7b09-b84c-44bc-9b57-a7182e70b056";
+        let base = serde_json::json!({
+            "projectId": id,
+            "expectedRevision": 1,
+            "expectedGlobalRevision": 2,
+        });
+        assert!(serde_json::from_value::<ProjectAiDefaultsUpdate>(base.clone()).is_err());
+        let clearing = serde_json::from_value::<ProjectAiDefaultsUpdate>({
+            let mut value = base.clone();
+            value["selection"] = serde_json::Value::Null;
+            value
+        })
+        .unwrap();
+        assert!(clearing.validate().is_ok());
+        let mut incomplete = base.clone();
+        incomplete["selection"] = serde_json::json!({
+            "profileId": "profile-1",
+            "expectedRevision": 2,
+            "modelId": "model-1"
+        });
+        assert!(serde_json::from_value::<ProjectAiDefaultsUpdate>(incomplete).is_err());
+        let mut unknown = base;
+        unknown["selection"] = serde_json::Value::Null;
+        unknown["secret"] = serde_json::json!("synthetic-secret-sentinel");
+        assert!(serde_json::from_value::<ProjectAiDefaultsUpdate>(unknown).is_err());
     }
 
     #[test]

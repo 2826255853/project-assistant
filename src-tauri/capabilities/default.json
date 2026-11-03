@@ -20,6 +20,7 @@
     "allow-app-get-status",
     "allow-settings-get",
     "allow-settings-update",
+    "allow-project-settings-update",
     "allow-logs-get-status",
     "allow-logs-clear",
     "allow-providers-list",

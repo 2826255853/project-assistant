@@ -138,6 +138,7 @@ export interface ImplementedCommandMap {
   overlay_control: { params: OverlayAction; data: null };
   settings_get: { params: SettingsScope; data: SettingsView | ProjectSettingsView };
   settings_update: { params: SettingsScope & { expectedRevision: number; changes: SettingChange[] }; data: SettingsView };
+  project_settings_update: { params: { projectId: string; expectedRevision: number; expectedGlobalRevision: number; selection: AiSelection | null }; data: ProjectSettingsView };
   // Main-window only; logs_clear returns the authoritative status after cleanup.
   logs_get_status: { params: Record<string, never>; data: LogStatus };
   logs_clear: { params: Record<string, never>; data: LogStatus };
@@ -160,6 +161,7 @@ export interface CommandMap extends TaskCommandMap {
   logs_clear: ImplementedCommandMap["logs_clear"];
   settings_get: { params: SettingsScope; data: SettingsView | ProjectSettingsView };
   settings_update: { params: SettingsScope & { expectedRevision: number; changes: SettingChange[] }; data: SettingsView };
+  project_settings_update: { params: { projectId: string; expectedRevision: number; expectedGlobalRevision: number; selection: AiSelection | null }; data: ProjectSettingsView };
   providers_list: { params: Record<string, never>; data: { profiles: ProviderProfile[]; active: AiSelection | null; configState: ConfigState } };
   provider_save: { params: { profileId: string | null; expectedRevision: number | null; name: string; endpoint: string; defaultModel: string | null; defaultEffort: string | null }; data: ProviderProfile };
   provider_set_enabled: { params: { profileId: string; expectedRevision: number; enabled: boolean }; data: ProviderProfile };

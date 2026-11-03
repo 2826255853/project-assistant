@@ -18,14 +18,14 @@ pub(crate) fn resolve(
         if !valid_id(id) {
             return Err(ErrorCode::PermissionDenied);
         }
-        let exists: bool = c
+        let authorized: bool = c
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1 AND removed_at IS NULL AND authorization='granted' AND availability='available')",
                 [id],
                 |r| r.get(0),
             )
             .map_err(sql)?;
-        if !exists {
+        if !authorized {
             return Err(ErrorCode::PermissionDenied);
         }
         if let Some(s) = super::default_selection(c, Some(id))? {

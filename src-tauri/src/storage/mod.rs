@@ -19,7 +19,7 @@ pub use repositories::{
 };
 
 pub const DATABASE_NAME: &str = "project-assistant.sqlite3";
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 struct Migration {
     version: i64,
@@ -53,6 +53,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "projects",
         sql: include_str!("../../migrations/0005_projects.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "project_ai_defaults",
+        sql: include_str!("../../migrations/0006_project_ai_defaults.sql"),
     },
 ];
 

@@ -79,14 +79,14 @@ test("S2-08 exposes project selection only to main with matching IPC and capabil
   ]);
   const implemented = contracts.match(/export interface ImplementedCommandMap \{([\s\S]*?)^\}/m)?.[1];
   assert.ok(implemented, "implemented command map is present");
-  const implementedProjects = ["projects_add_from_picker", "projects_list", "project_get", "project_git_summary", "project_remove", "project_select", "project_open_directory", "project_open_file", "project_pick_file"];
+  const implementedProjects = ["projects_add_from_picker", "projects_list", "project_get", "project_git_summary", "project_remove", "project_select", "project_settings_update", "project_open_directory", "project_open_file", "project_pick_file"];
   for (const command of implementedProjects) {
     assert.equal(implemented.includes(command), true);
     assert.equal(rustCommands.includes(command), true);
     assert.equal(manifest.includes(command), true);
     assert.ok(mainCapability.permissions.includes(`allow-${command.replaceAll("_", "-")}`));
   }
-  assert.equal(mainCapability.permissions.filter(permission => /project/i.test(permission)).length, 9);
+  assert.equal(mainCapability.permissions.filter(permission => /project/i.test(permission)).length, 10);
   assert.equal(overlayCapability.permissions.some(permission => /project/i.test(permission)), false);
   assert.match(appState, /service.id == "storage"/);
   assert.match(appState, /projects.state = storage_health\.0/);

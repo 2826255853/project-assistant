@@ -11,6 +11,7 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
   await until(() => evaluate("document.querySelector('.main-area')?.dataset.page"), page => page === "home");
   assert.equal((await call("app_get_status")).data.activeProject, null, "activity is process-only and begins empty");
   await fixture("project_seed");
+  await fixture("project_ai_seed_profile");
   const id = await readFile(join(fixtureDirectory, "project-fixture-id"), "utf8");
   let view = (await call("project_get", {projectId:id})).data;
   assert.equal(view.authorization, "granted"); assert.equal(view.lastUsedAt, null);
@@ -124,12 +125,68 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
   await evaluate("document.querySelector('[data-testid=project-settings-read]').click()");
   await until(() => evaluate("document.querySelectorAll('[data-testid=project-settings-readonly] dl dd').length"), count => count === 7);
   assert.equal(await evaluate("document.querySelector('[data-testid=project-settings-readonly] dl dd')?.textContent.includes('全局继承')"),true);
-  const projectSettings = (await call("settings_get",{scope:"project",projectId:id})).data;
+  let projectSettings = (await call("settings_get",{scope:"project",projectId:id})).data;
   assert.equal(projectSettings.projectId,id); assert.equal(projectSettings.values.length,7);
   assert.equal(projectSettings.values.find(v=>v.key==="search_engine").source,"global");
   assert.equal(projectSettings.values.find(v=>v.key==="project_sort").source,"global");
   assert.equal((await call("settings_get",{scope:"project",projectId:"c14e7b09-b84c-44bc-9b57-a7182e70b056"})).error.code,"PA_PROJECT_NOT_FOUND");
   assert.equal((await call("settings_update",{scope:"project",projectId:id,expectedRevision:projectSettings.revision,changes:[{key:"project_sort",value:"name"}]})).error.code,"PA_IPC_PERMISSION_DENIED");
+  const seededProfile = (await call("providers_list",{})).data.profiles.find(profile=>profile.id==="synthetic-project-profile");
+  assert.ok(seededProfile);
+  const profileSelection = {profileId:seededProfile.id,expectedRevision:seededProfile.configRevision,modelId:"synthetic-project-model",effort:"high"};
+  const projectRevisions = () => ({expectedRevision:projectSettings.revision,expectedGlobalRevision:projectSettings.globalRevision});
+  for (const [params, code] of [
+    [{projectId:id,...projectRevisions(),selection:{...profileSelection,profileId:"unknown-project-profile"}},"PA_CREDENTIAL_PROFILE_NOT_FOUND"],
+    [{projectId:id,...projectRevisions(),selection:{...profileSelection,modelId:"unlisted-model"}},"PA_PROVIDER_CAPABILITY_INVALID"],
+    [{projectId:id,...projectRevisions(),selection:profileSelection,secret:"synthetic-secret-sentinel"},"PA_IPC_INVALID_REQUEST"],
+  ]) assert.equal((await call("project_settings_update",params)).error.code,code);
+  await fixture("project_ai_credential_missing");
+  assert.equal((await call("project_settings_update",{projectId:id,...projectRevisions(),selection:profileSelection})).error.code,"PA_CREDENTIAL_INVALID");
+  await fixture("project_ai_credential_restore");
+  await evaluate("document.querySelector('[data-testid=project-ai-project-mode]').click()");
+  await until(() => evaluate("Boolean(document.querySelector('#provider-select option[value=synthetic-project-profile]'))"), Boolean);
+  await evaluate(`(() => { const input=document.querySelector('#provider-select'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(input,'synthetic-project-profile'); input.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+  await until(() => evaluate("document.querySelector('[data-testid=project-ai-read-capabilities]') && !document.querySelector('[data-testid=project-ai-read-capabilities]').disabled"), Boolean);
+  await evaluate("document.querySelector('[data-testid=project-ai-read-capabilities]').click()");
+  await until(() => evaluate("Boolean(document.querySelector('#model-select option[value=synthetic-project-model]'))"), Boolean);
+  await until(() => evaluate("document.querySelector('[data-testid=project-ai-save]') && !document.querySelector('[data-testid=project-ai-save]').disabled"), Boolean);
+  await evaluate("document.querySelector('[data-testid=project-ai-save]').click()");
+  await until(async () => (await call("settings_get",{scope:"project",projectId:id})).data.revision, revision => revision === projectSettings.revision + 1);
+  projectSettings = (await call("settings_get",{scope:"project",projectId:id})).data;
+  assert.equal(projectSettings.values.find(v=>v.key==="ai_defaults").source,"project");
+  assert.equal((await call("project_settings_update",{projectId:id,expectedRevision:projectSettings.revision-1,expectedGlobalRevision:projectSettings.globalRevision,selection:profileSelection})).error.code,"PA_PROJECT_CONFLICT_REVISION");
+  await fixture("audit_fail_write");
+  assert.equal((await call("project_settings_update",{projectId:id,...projectRevisions(),selection:null})).error.code,"PA_AUDIT_WRITE_FAILED");
+  await fixture("audit_restore_write");
+  assert.equal((await call("settings_get",{scope:"project",projectId:id})).data.revision,projectSettings.revision);
+  await fixture("ai_settings_sql_fail");
+  assert.equal((await call("project_settings_update",{projectId:id,...projectRevisions(),selection:profileSelection})).error.code,"PA_SETTINGS_STORAGE_FAILED");
+  await fixture("ai_settings_sql_restore");
+  assert.equal((await call("settings_get",{scope:"project",projectId:id})).data.revision,projectSettings.revision);
+  const globalBeforeChange = (await call("settings_get",{scope:"global"})).data;
+  assert.equal((await call("settings_update",{scope:"global",expectedRevision:globalBeforeChange.revision,changes:[{key:"project_sort",value:"name"}]})).data.revision,globalBeforeChange.revision+1);
+  assert.equal((await call("project_settings_update",{projectId:id,...projectRevisions(),selection:null})).error.code,"PA_CONFLICT_REVISION");
+  await fixture("project_ai_profile_revision");
+  assert.equal((await call("project_settings_update",{projectId:id,...projectRevisions(),selection:profileSelection})).error.code,"PA_CONFLICT_REVISION");
+  await evaluate("document.querySelector('[data-page=projects].nav-item')?.click()");
+  await until(() => evaluate("Array.from(document.querySelectorAll('[data-testid=project-row]')).some(row=>row.innerText.includes('synthetic-project-private-path'))"), Boolean);
+  await evaluate("Array.from(document.querySelectorAll('[data-testid=project-row]')).find(row=>row.innerText.includes('synthetic-project-private-path')).click()");
+  await until(() => evaluate("Boolean(document.querySelector('[data-testid=project-settings-read]'))"), Boolean);
+  await evaluate("document.querySelector('[data-testid=project-settings-read]').click()");
+  await until(() => evaluate("document.querySelector('[data-testid=project-ai-defaults]')?.dataset.revision"), revision => revision === `${projectSettings.revision}:${globalBeforeChange.revision+1}`);
+  await until(() => evaluate("Boolean(document.querySelector('[data-testid=project-ai-invalid]'))"), Boolean);
+  projectSettings = (await call("settings_get",{scope:"project",projectId:id})).data;
+  assert.equal(projectSettings.globalRevision,globalBeforeChange.revision+1);
+  assert.equal(projectSettings.values.find(v=>v.key==="ai_defaults").source,"project","invalid project default remains authoritative without global fallback");
+  await evaluate("document.querySelector('[data-testid=project-ai-inherit-mode]').click()");
+  await until(() => evaluate("document.querySelector('[data-testid=project-ai-save]') && !document.querySelector('[data-testid=project-ai-save]').disabled"), Boolean);
+  await evaluate("document.querySelector('[data-testid=project-ai-save]').click()");
+  await until(async () => (await call("settings_get",{scope:"project",projectId:id})).data.revision, revision => revision === projectSettings.revision+1);
+  projectSettings = (await call("settings_get",{scope:"project",projectId:id})).data;
+  assert.equal(projectSettings.values.find(v=>v.key==="ai_defaults").source,"global");
+  const globalAfterProjectTest = (await call("settings_get",{scope:"global"})).data;
+  assert.equal((await call("settings_update",{scope:"global",expectedRevision:globalAfterProjectTest.revision,changes:[{key:"project_sort",value:"recent"}]})).data.revision,globalAfterProjectTest.revision+1);
+  report.results.push("项目页保存完整 AI 默认、清除继承和重读冲突；未知 profile、过期/缺失能力、凭据缺失、秘密字段及审计/SQL 故障均拒绝");
   await fixture("process_restart");
   await until(async () => (await call("app_get_status")).data, status => status.streamId !== activeStatus.streamId && status.activeProject === null);
   await until(() => overlayEval("document.querySelector('.overlay-root')?.dataset.context"), context => context === "");
@@ -149,7 +206,7 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
   await overlayEval("document.querySelector('.floating-ball')?.click()");
   await until(() => overlayEval("document.querySelector('.overlay-context')?.textContent"), context => context === "活动项目：synthetic-project-private-path");
   overlaySocket.close();
-  report.results.push("主窗口活动项目与悬浮入口同步；事件缺口、状态流重建和悬浮窗口重载后重新读取一致；项目设置只读并标记全局继承来源");
+  report.results.push("主窗口活动项目与悬浮入口同步；事件缺口、状态流重建和悬浮窗口重载后重新读取一致；项目设置来源标记正确");
   await evaluate("Array.from(document.querySelectorAll('[data-testid=project-row]')).find(row=>row.innerText.includes('synthetic-project-private-path')).click()");
   await until(() => evaluate("Boolean(document.querySelector('[data-testid=project-open-directory]'))"), Boolean);
   await evaluate("document.querySelector('[data-testid=project-select-active]').click()");
@@ -158,10 +215,11 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
   await until(async () => (await call("settings_get",{scope:"global"})).data.values.find(change=>change.key==="project_sort").value, value => value === "name");
   await evaluate(`(() => { const select=document.querySelector('[data-testid=project-sort]'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,'recent'); select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
   await until(async () => (await call("settings_get",{scope:"global"})).data.values.find(change=>change.key==="project_sort").value, value => value === "recent");
-  await until(() => evaluate("document.querySelectorAll('[data-testid=project-row]').length"), count => count >= 1);
-  await evaluate("document.querySelector('[data-testid=project-row]').click()");
-  await until(() => evaluate("Boolean(document.querySelector('[data-testid=project-open-directory]') && !document.querySelector('[data-testid=project-open-directory]').disabled)"), Boolean);
-  await evaluate("document.querySelector('[data-testid=project-open-directory]').click()");
+  await evaluate("document.querySelector('[data-page=projects].nav-item')?.click()");
+  await until(() => evaluate("Array.from(document.querySelectorAll('[data-testid=project-row]')).some(row=>row.innerText.includes('synthetic-project-private-path'))"), Boolean);
+  await evaluate("Array.from(document.querySelectorAll('[data-testid=project-row]')).find(row=>row.innerText.includes('synthetic-project-private-path')).click()");
+  await until(() => evaluate("document.querySelector('[data-testid=project-detail] h3')?.textContent === 'synthetic-project-private-path' && Boolean(document.querySelector('[data-testid=project-open-directory]') && !document.querySelector('[data-testid=project-open-directory]').disabled)"), Boolean);
+  await evaluate("new Promise((resolve,reject)=>{const deadline=Date.now()+5000;const click=()=>{const button=document.querySelector('[data-testid=project-open-directory]');if(button&&!button.disabled){button.click();resolve(true)}else if(Date.now()>=deadline){reject(new Error('project open button disappeared'))}else setTimeout(click,50)};click()})");
   await until(async () => (await call("project_get",{projectId:id})).data.lastUsedAt, value => value !== null);
   await evaluate("document.querySelector('[data-page=home].nav-item').click()");
   await until(() => evaluate("Array.from(document.querySelectorAll('[data-testid=recent-project-row]')).some(row=>row.innerText.includes('synthetic-project-private-path'))"), Boolean);
@@ -203,13 +261,13 @@ export async function verifyProjectsDesktop({evaluate, until, report, debugPort,
     try {
       await new Promise((done,reject)=>{socket.addEventListener("open",done,{once:true});socket.addEventListener("error",reject,{once:true});});socket.addEventListener("message",receive);
       await until(()=>evaluate("Boolean(window.__TAURI_INTERNALS__)",socket),Boolean);
-      for(const command of ["projects_add_from_picker","projects_list","project_get","project_git_summary","project_remove","project_select","project_open_directory","project_open_file","project_pick_file","settings_get"]) assert.equal(await evaluate(`${invoke(command,{projectId:id,expectedRevision:2})}.then(()=>false,()=>true)`,socket),true);
+      for(const command of ["projects_add_from_picker","projects_list","project_get","project_git_summary","project_remove","project_select","project_settings_update","project_open_directory","project_open_file","project_pick_file","settings_get"]) assert.equal(await evaluate(`${invoke(command,{projectId:id,expectedRevision:2})}.then(()=>false,()=>true)`,socket),true);
     } finally {socket.close();}
     if(close) await fixture(close);
   }
   await fixture("navigate_remote");
   await until(()=>evaluate("document.title"),title=>title==="IPC remote fixture");
-  for(const command of ["projects_add_from_picker","projects_list","project_get","project_git_summary","project_remove","project_select","project_open_directory","project_open_file","project_pick_file","settings_get"]) assert.equal(await evaluate(`${invoke(command,{projectId:id})}.then(()=>false,()=>true)`),true);
+  for(const command of ["projects_add_from_picker","projects_list","project_get","project_git_summary","project_remove","project_select","project_settings_update","project_open_directory","project_open_file","project_pick_file","settings_get"]) assert.equal(await evaluate(`${invoke(command,{projectId:id})}.then(()=>false,()=>true)`),true);
   await cdp("Page.navigate",{url:mainUrl}); await until(()=>evaluate("Boolean(document.querySelector('.app-shell'))"),Boolean);
   report.results.push("overlay、未知本地窗口、远端 main 的项目 capability 拒绝通过；未自动打开原生选择器");
 }

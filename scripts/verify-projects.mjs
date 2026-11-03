@@ -35,6 +35,7 @@ try {
   await npm("storage-regression",["run","verify:storage"]);
   report.storage=JSON.parse(await readFile(join(root,"artifacts","storage","report.json"),"utf8"));assert.equal(report.storage.passed,true);
   report.checks.push("project-path-search-git-adapter-unit-coverage");
+  await npm("embedded-debug-build",["run","tauri","--","build","--debug","--no-bundle"]);
   for(const mode of ["built","dev"]) {
     await npm(`${mode}-projects-desktop`,["run","verify:desktop","--",mode,"projects"]);
     const result=JSON.parse(await readFile(join(root,"artifacts",`shell-${mode}-projects`,"report.json"),"utf8"));assert.equal(result.passed,true);report.desktops.push(result);
@@ -59,7 +60,7 @@ try {
     {item:"External default program/editor loading after systemAccepted",status:"not asserted by system handoff result"},
     {item:"Phase 1 tray mouse, monitor hotplug/movement and live DPI",status:"remains separate step 1.10 hardware acceptance"},
   ];
-  report.handoff={stage3MustRevalidate:["Project remains registered and authorized at task creation.","Authorized directory identity still matches the intended working directory and cwd.","Project, global and per-request configuration precedence and validity are checked; Stage 2 selection/opening is not task authorization."],notImplemented:["Task/session creation and restoration","Real task submission, cancellation and event streaming","Approval decision/consumption atomicity","Project settings writes and project AI default application"],futureScope:["Git diff body/history and Git write operations remain outside Stage 2.","Real HTTPS search remains Stage 4; reserved official-source authentication is excluded."]};
+  report.handoff={stage3MustRevalidate:["Project remains registered and authorized at task creation.","Authorized directory identity still matches the intended working directory and cwd.","Project, global and per-request configuration precedence and validity are checked; Stage 2 selection/opening is not task authorization."],implementedBeforeTaskRuntime:["Project AI defaults can be edited, validated, audited and cleared to inherit; this does not create task/session execution."],notImplemented:["Task/session creation and restoration","Real task submission, cancellation and event streaming","Approval decision/consumption atomicity"],futureScope:["Git diff body/history and Git write operations remain outside Stage 2.","Real HTTPS search remains Stage 4; reserved official-source authentication is excluded."]};
   report.risks=[{id:"R-019",status:"partially open",detail:"Path authorization and NTFS delivery evidence covers tested Windows x64. ReFS/TxF-unavailable delivery is rejected; ReFS and other Windows versions are not validated."},{id:"R-014",status:"stage 1 configuration-layer gate only",detail:"Stage 3 real-task gateway and runtime concurrency remain open."},{id:"R-016",status:"regression rerun",detail:"This does not broaden supported providers or validate real task use."}];
   report.passed=true;
 } catch(error) {report.error=String(error);console.error(report.error);process.exitCode=1;}

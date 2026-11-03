@@ -5,6 +5,7 @@ import type { ActiveProject, GitSummary, ProjectSetting, ProjectSettingsView, Pr
 import type { ProjectSearchState } from "../ipc/projectSearch";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { StatePanel } from "../components/StatePanel";
+import { ProjectAiDefaultsEditor } from "./ProjectAiDefaultsEditor";
 import { toPublicError } from "../ipc/errors";
 import type { PublicError } from "../ipc/errors";
 import "./ProjectsPage.css";
@@ -255,6 +256,14 @@ export function ProjectsPage({ initialProjectId, onBackHome, refreshKey, activeP
     }
   }
 
+  async function reloadProjectSettings() {
+    if (!selected) throw new Error("Project is no longer selected");
+    const next = await call("settings_get", { scope: "project", projectId: selected.id });
+    setProjectSettings(next);
+    setProjectSettingsError(null);
+    return next;
+  }
+
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.target !== event.currentTarget) return;
     if (busy) return;
@@ -448,7 +457,7 @@ export function ProjectsPage({ initialProjectId, onBackHome, refreshKey, activeP
         <dl className="project-detail-list"><dt>目录</dt><dd>{selected.absolutePath}</dd><dt>授权</dt><dd>{selected.authorization === "granted" ? "已授权" : "需要重新授权"}</dd><dt>最近使用</dt><dd>{formatUsedAt(selected.lastUsedAt)}</dd><dt>Git</dt><dd>{gitLabel(git)} <button type="button" className="text-button" data-testid="project-git-refresh" disabled={gitBusy || busy} onClick={() => void refreshGit()}>{gitBusy ? "刷新中…" : "刷新"}</button></dd></dl>
         {gitError && <ErrorNotice error={gitError} testId="project-git-error" actions={<button type="button" onClick={() => void refreshGit()}>重试 Git 摘要</button>} />}
         {git && git.state !== "available" && <p className="project-degraded" data-testid="project-git-degraded">Git 摘要不可用不会阻塞目录和文件打开。</p>}
-        <section className="project-settings-readonly" data-testid="project-settings-readonly"><h4>项目设置（只读）</h4><button type="button" className="quiet-button" data-testid="project-settings-read" disabled={busy || !usable || projectSettingsBusy} onClick={() => void readProjectSettings()}>{projectSettingsBusy ? "正在读取…" : projectSettings ? "重新读取有效设置" : "读取有效设置"}</button>{projectSettingsError && <ErrorNotice error={projectSettingsError} testId="project-settings-read-error" />}{projectSettings && <dl className="project-detail-list">{projectSettings.values.map(setting => <Fragment key={setting.key}><dt>{projectSettingLabel(setting)}</dt><dd>{projectSettingValue(setting)} · {setting.source === "project" ? "项目值" : "全局继承"}</dd></Fragment>)}</dl>}</section>
+        <section className="project-settings-readonly" data-testid="project-settings-readonly"><div className="section-heading"><h4>项目设置</h4><button type="button" className="quiet-button" data-testid="project-settings-read" disabled={busy || !usable || projectSettingsBusy} onClick={() => void readProjectSettings()}>{projectSettingsBusy ? "正在读取…" : projectSettings ? "重新读取设置" : "读取设置"}</button></div>{projectSettingsError && <ErrorNotice error={projectSettingsError} testId="project-settings-read-error" />}{projectSettings && <><dl className="project-detail-list">{projectSettings.values.map(setting => <Fragment key={setting.key}><dt>{projectSettingLabel(setting)}</dt><dd>{projectSettingValue(setting)} · {setting.source === "project" ? "项目值" : "全局继承"}</dd></Fragment>)}</dl><ProjectAiDefaultsEditor projectId={selected.id} view={projectSettings} onUpdated={setProjectSettings} onReload={reloadProjectSettings} disabled={!usable} /></>}</section>
         {selected.availability !== "available" || selected.authorization !== "granted" ? <div className="project-unavailable" data-testid="project-path-unavailable">此项目路径当前不可用。请重新选择原目录并确认授权后恢复。<button type="button" className="quiet-button" data-testid="project-reauthorize" disabled={busy} onClick={() => void addProject()}>{addBusy ? "正在选择…" : "重新选择目录并授权"}</button></div> : <div className="project-actions">
           <button type="button" className="primary-button" data-testid="project-select-active" disabled={busy || activeProject?.projectId === selected.id} onClick={() => void activateProject()}>{selectionBusy ? "正在切换…" : activeProject?.projectId === selected.id ? "当前活动项目" : "设为活动项目"}</button>
           <button type="button" className="primary-button" data-testid="project-open-directory" disabled={busy} onClick={() => void openDirectory()}>{action === "directory" ? "正在打开…" : "打开目录"}</button>
