@@ -13,13 +13,14 @@ pub mod probe;
 pub mod projects;
 mod repositories;
 pub(crate) mod settings;
+pub(crate) mod tasks;
 pub use repositories::{
     AUDIT_RETENTION_MS, AuditEventInput, AuditRepository, CapabilityRepository, CredentialProfile,
     ProfileRepository, SettingRecord, SettingsRepository, SnapshotRepository,
 };
 
 pub const DATABASE_NAME: &str = "project-assistant.sqlite3";
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 struct Migration {
     version: i64,
@@ -58,6 +59,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 6,
         name: "project_ai_defaults",
         sql: include_str!("../../migrations/0006_project_ai_defaults.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "task_runtime",
+        sql: include_str!("../../migrations/0007_task_runtime.sql"),
     },
 ];
 
@@ -166,19 +172,9 @@ impl Storage {
         repositories::validate_correlation_id(correlation_id)?;
         let transaction = self.connection.transaction().map_err(sql_error)?;
         let finished_at = repositories::audit_now_ms()?;
-        let tasks = transaction
-            .execute(
-                "UPDATE tasks SET status = 'interrupted', error_code = 'PA_STORAGE_RESTART_INTERRUPTED', finished_at = ?1 WHERE status IN ('idle', 'preparing', 'running', 'approval_required', 'cancelling')",
-                [finished_at],
-            )
-            .map_err(sql_error)?;
-        let approvals = transaction
-            .execute(
-                "UPDATE approvals SET decision = 'interrupted', decided_at = ?1 WHERE decision = 'pending'",
-                [finished_at],
-            )
-            .map_err(sql_error)?;
-        if tasks > 0 || approvals > 0 {
+        let (tasks, approvals, sessions) =
+            tasks::recover_in_transaction(&transaction, correlation_id, finished_at)?;
+        if tasks > 0 || approvals > 0 || sessions > 0 {
             repositories::record_in_transaction(
                 &transaction,
                 AuditEventInput {
@@ -195,7 +191,11 @@ impl Storage {
         transaction
             .commit()
             .map_err(repositories::audit_write_error)?;
-        Ok(RecoverySummary { tasks, approvals })
+        Ok(RecoverySummary {
+            tasks,
+            approvals,
+            sessions,
+        })
     }
 
     pub fn settings(&mut self) -> SettingsRepository<'_> {
@@ -205,6 +205,10 @@ impl Storage {
     #[cfg(windows)]
     pub fn projects(&mut self) -> projects::ProjectRepository<'_> {
         projects::ProjectRepository::new(&mut self.connection)
+    }
+
+    pub(crate) fn tasks(&mut self) -> tasks::TaskRepository<'_> {
+        tasks::TaskRepository::new(&mut self.connection)
     }
 
     pub fn profiles(&mut self) -> ProfileRepository<'_> {
@@ -437,6 +441,7 @@ impl Storage {
 pub struct RecoverySummary {
     pub tasks: usize,
     pub approvals: usize,
+    pub sessions: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

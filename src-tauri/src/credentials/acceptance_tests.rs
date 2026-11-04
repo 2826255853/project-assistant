@@ -197,12 +197,34 @@ fn first_put_replace_remove_and_repair_missing_external_entry() {
     assert_eq!(put.credential.revision, 1);
     assert_eq!(put.config_revision, 2);
     fixture.verify_secret(&mut db, 1, FIRST);
+    let mut snapshot = crate::providers::PublicSnapshot {
+        id: "synthetic-snapshot".into(),
+        profile_id: fixture.id.clone(),
+        profile_name: "Synthetic credentials".into(),
+        source_kind: "relay".into(),
+        endpoint: "https://fixture.invalid/v1".into(),
+        model_id: "synthetic".into(),
+        effort: Some("high".into()),
+        config_revision: put.config_revision,
+        credential_revision: put.credential.revision,
+        effective_at: 1001,
+        routing_scope: "owned_process",
+    };
+    verify_task_credential(&db.connection, &snapshot).unwrap();
+    snapshot.credential_revision += 1;
+    assert_eq!(
+        verify_task_credential(&db.connection, &snapshot),
+        Err(ErrorCode::CredentialInvalid)
+    );
     assert_eq!(db.capabilities().count_valid(&fixture.id, 1001).unwrap(), 0);
     let put = fixture
         .mutate(&mut db, 2, Some(SECOND), &SystemStore)
         .unwrap();
     fixture.verify_secret(&mut db, 2, SECOND);
     assert_eq!(put.config_revision, 3);
+    snapshot.config_revision = put.config_revision;
+    snapshot.credential_revision = put.credential.revision;
+    verify_task_credential(&db.connection, &snapshot).unwrap();
     let old = Binding {
         credential_revision: 1,
         ..read_binding(&mut db, &fixture.id).unwrap()
@@ -470,9 +492,7 @@ fn occupied_task_and_stale_revision_reject_before_os_access() {
     let fixture = Fixture::new();
     let mut db = fixture.open();
     storage::probe::seed(&mut db.connection).unwrap();
-    db.connection
-        .execute("UPDATE tasks SET status='running',finished_at=NULL", [])
-        .unwrap();
+    db.connection.execute_batch("INSERT INTO ai_config_snapshots SELECT 'credential-busy-snap',profile_id,profile_name,source_kind,endpoint,endpoint_origin,wire_api,auth_kind,credential_ref,credential_revision,model_id,effort,config_revision,capability_source,capability_version,adapter_version,routing_scope,effective_at,captured_at FROM ai_config_snapshots WHERE id='snap1'; INSERT INTO tasks(id,session_id,snapshot_id,status,created_at,started_at) VALUES('credential-busy-task','s1','credential-busy-snap','running',1000,1001);").unwrap();
     let store = FaultStore::new(Action::Read, 1);
     assert!(matches!(
         mutate_in_storage(

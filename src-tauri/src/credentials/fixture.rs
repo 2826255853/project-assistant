@@ -14,10 +14,12 @@ pub(crate) fn run(app: &tauri::AppHandle, action: &str) -> Result<(), ErrorCode>
     // Finishing the task must not acquire the operation lock held by the waiter.
     if action == "credential_idle" || action == "credential_occupy" {
         return app.state::<storage::StorageState>().with_storage(|storage| {
-            storage.connection.execute(
-                "UPDATE tasks SET status = ?1, finished_at = ?2 WHERE id = 'credential-task'",
-                rusqlite::params![if action == "credential_idle" { "completed" } else { "running" }, if action == "credential_idle" { Some(1002) } else { None }],
-            ).map(|_| ()).map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })
+            let result = if action == "credential_idle" {
+                storage.connection.execute("UPDATE tasks SET status='completed',finished_at=1002 WHERE id='credential-busy-task'", []).map(|_| ())
+            } else {
+                storage.connection.execute_batch("INSERT INTO ai_config_snapshots SELECT 'credential-busy-snap',profile_id,profile_name,source_kind,endpoint,endpoint_origin,wire_api,auth_kind,credential_ref,credential_revision,model_id,effort,config_revision,capability_source,capability_version,adapter_version,routing_scope,effective_at,captured_at FROM ai_config_snapshots WHERE id='credential-snap'; INSERT INTO tasks(id,session_id,snapshot_id,status,created_at,started_at) SELECT 'credential-busy-task',session_id,'credential-busy-snap','running',1000,1001 FROM sessions WHERE id='s1';")
+            };
+            result.map(|_| ()).map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })
         }).map_err(map_storage_failure);
     }
     let _operation = state
@@ -53,7 +55,7 @@ pub(crate) fn run(app: &tauri::AppHandle, action: &str) -> Result<(), ErrorCode>
             ).map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })?;
             storage.connection.execute("INSERT INTO model_capabilities VALUES (?1,'synthetic','',NULL,1,'connection_probe','fixture',1,1000,2000)", [&id]).map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })?;
             storage.connection.execute("INSERT INTO ai_config_snapshots SELECT 'credential-snap',?1,profile_name,source_kind,endpoint,endpoint_origin,wire_api,auth_kind,?2,0,model_id,effort,config_revision,capability_source,capability_version,adapter_version,routing_scope,effective_at,captured_at FROM ai_config_snapshots WHERE id='snap1'", rusqlite::params![id, logical_ref(&id, 0)]).map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })?;
-            storage.connection.execute_batch("INSERT INTO tasks SELECT 'credential-task',session_id,NULL,'credential-snap',NULL,NULL,'completed',NULL,1000,1001,1002 FROM tasks WHERE id='t1';").map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })?;
+            storage.connection.execute_batch("INSERT INTO tasks(id,session_id,external_turn_id,snapshot_id,prompt_summary_redacted,result_summary_redacted,status,error_code,created_at,started_at,finished_at) SELECT 'credential-task',session_id,NULL,'credential-snap',NULL,NULL,'completed',NULL,1000,1001,1002 FROM tasks WHERE id='t1';").map_err(|_| storage::StorageError { code: "STORAGE_SQL_FAILED", backup_path: None })?;
             return Ok(Ok(()));
         }
         if action == "credential_assert" {

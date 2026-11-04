@@ -58,6 +58,13 @@ test("public error display is rebuilt locally and retains only validated correla
   assert.match(errorForCode("PA_AUDIT_WRITE_FAILED").userMessage, /审计/);
 });
 
+test("task service codes have local fixed presentation before their IPC gate opens", () => {
+  for (const code of ["PA_SESSION_NOT_FOUND", "PA_SESSION_PROJECT_MISMATCH", "PA_SESSION_CLOSED", "PA_SESSION_BUSY", "PA_TASK_NOT_FOUND", "PA_TASK_CONFLICT_REVISION", "PA_TASK_QUEUE_FULL"]) {
+    assert.equal(errorForCode(code).code, code);
+    assert.equal(errorForCode(code).message.includes("undefined"), false);
+  }
+});
+
 test("strict response envelope rejects extra fields without echoing rejected data", () => {
   for (const wire of [
     { ...failure(), rawError: secret },

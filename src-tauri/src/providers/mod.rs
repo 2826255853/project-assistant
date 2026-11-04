@@ -7,6 +7,7 @@ mod tests;
 mod types;
 pub(crate) use operations::*;
 pub(crate) use repository::{delete, list, models, save, set_enabled};
+pub(crate) use snapshots::capture_snapshot_in_transaction;
 pub(crate) use types::*;
 
 use crate::{ipc::ErrorCode, storage};

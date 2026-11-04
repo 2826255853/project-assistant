@@ -283,7 +283,7 @@ fn occupy(f: &Fixture, s: &Selection) {
     f.run(s, "test", Cancel::default());
     f.db(|c|{let tx=c.transaction().map_err(sql)?;let snapshot=snapshots::capture_in_transaction(&tx,Some(s),None)?;let at=now()?;
  tx.execute("INSERT OR IGNORE INTO projects(id,canonical_path,path_key,name,display_name,created_at,updated_at) VALUES('synthetic-project','C:/synthetic','synthetic','Synthetic',NULL,?1,?1)",[at]).map_err(sql)?;
- tx.execute("INSERT OR IGNORE INTO sessions VALUES('synthetic-session','synthetic-project',NULL,NULL,'active',?1,?1)",[at]).map_err(sql)?;
+ tx.execute("INSERT OR IGNORE INTO sessions(id,project_id,external_session_id,summary_redacted,status,created_at,updated_at) VALUES('synthetic-session','synthetic-project',NULL,NULL,'active',?1,?1)",[at]).map_err(sql)?;
  tx.execute("INSERT INTO tasks(id,session_id,snapshot_id,status,created_at,started_at) VALUES('synthetic-task','synthetic-session',?1,'running',?2,?2)",params![snapshot.id,at]).map_err(sql)?;tx.commit().map_err(sql)
  }).unwrap();
 }

@@ -2,6 +2,7 @@
 //! The SQLite database stores only the logical reference and state; secret bytes
 //! never enter a command response, log, audit row, or ordinary database.
 use crate::{ipc::ErrorCode, storage};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::{
     Mutex,
@@ -83,7 +84,7 @@ impl Default for CredentialsState {
 }
 
 impl CredentialsState {
-    fn set_available(&self, available: bool) {
+    pub(crate) fn set_available(&self, available: bool) {
         if let Ok(mut state) = self.available.lock() {
             *state = available;
         }
@@ -199,6 +200,56 @@ fn read_binding(storage: &mut storage::Storage, profile_id: &str) -> Result<Bind
         .map_err(map_storage_failure)
         .and_then(|profile| profile.ok_or(ErrorCode::CredentialProfileNotFound))
         .and_then(binding)
+}
+
+/// Physical credential preflight for task admission. The returned secret never
+/// leaves this module and is immediately zeroized after validating the
+/// snapshot's profile, revision and HTTPS origin.
+pub(crate) fn verify_task_credential(
+    connection: &rusqlite::Connection,
+    snapshot: &crate::providers::PublicSnapshot,
+) -> Result<(), ErrorCode> {
+    if !valid_profile_id(&snapshot.profile_id) {
+        return Err(ErrorCode::CredentialInvalid);
+    }
+    let profile = connection
+        .query_row(
+            "SELECT id,endpoint_origin,credential_ref,credential_revision,config_revision,credential_status,adapter_kind,auth_kind FROM provider_profiles WHERE id=?1",
+            [&snapshot.profile_id],
+            |row| Ok(storage::CredentialProfile {
+                id: row.get(0)?, endpoint_origin: row.get(1)?, credential_ref: row.get(2)?,
+                credential_revision: row.get(3)?, config_revision: row.get(4)?,
+                credential_status: row.get(5)?, adapter_kind: row.get(6)?, auth_kind: row.get(7)?,
+            }),
+        )
+        .optional()
+        .map_err(|_| ErrorCode::CredentialsStorageFailed)?
+        .ok_or(ErrorCode::CredentialProfileNotFound)?;
+    let current = binding(profile)?;
+    let expected_origin = Url::parse(&snapshot.endpoint)
+        .ok()
+        .map(|url| url.origin().ascii_serialization())
+        .ok_or(ErrorCode::CredentialInvalid)?;
+    if current.status != "configured_unverified" && current.status != "verified" {
+        return Err(ErrorCode::CredentialsUnavailable);
+    }
+    if current.credential_revision != snapshot.credential_revision
+        || current.origin != expected_origin
+        || current.config_revision != snapshot.config_revision
+    {
+        return Err(ErrorCode::CredentialInvalid);
+    }
+    let blob = SystemStore
+        .read(&current)
+        .map_err(|_| ErrorCode::CredentialsUnavailable)?
+        .ok_or(ErrorCode::CredentialsUnavailable)?;
+    let secret =
+        platform::secret(&blob, &current).map_err(|_| ErrorCode::CredentialsUnavailable)?;
+    if secret.as_bytes().is_empty() {
+        return Err(ErrorCode::CredentialsUnavailable);
+    }
+    drop(secret);
+    Ok(())
 }
 
 /// Resolve a secret only for an owned process that already knows the selected

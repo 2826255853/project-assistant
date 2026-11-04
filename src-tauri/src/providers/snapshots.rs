@@ -11,8 +11,16 @@ pub(crate) fn resolve(
     once: Option<&Selection>,
     project: Option<&str>,
 ) -> Result<Selection, ErrorCode> {
+    resolve_with_source(c, once, project).map(|(selection, _)| selection)
+}
+
+pub(crate) fn resolve_with_source(
+    c: &Connection,
+    once: Option<&Selection>,
+    project: Option<&str>,
+) -> Result<(Selection, &'static str), ErrorCode> {
     if let Some(s) = once {
-        return Ok(s.clone());
+        return Ok((s.clone(), "task"));
     }
     if let Some(id) = project {
         if !valid_id(id) {
@@ -29,10 +37,22 @@ pub(crate) fn resolve(
             return Err(ErrorCode::PermissionDenied);
         }
         if let Some(s) = super::default_selection(c, Some(id))? {
-            return Ok(s);
+            return Ok((s, "project"));
         }
     }
-    super::default_selection(c, None)?.ok_or(ErrorCode::ProviderSelectionInvalid)
+    super::default_selection(c, None)
+        .map(|selection| selection.map(|selection| (selection, "global")))?
+        .ok_or(ErrorCode::ProviderSelectionInvalid)
+}
+
+pub(crate) fn capture_snapshot_in_transaction(
+    c: &Connection,
+    once: Option<&Selection>,
+    authorized_project: Option<&str>,
+) -> Result<(PublicSnapshot, &'static str), ErrorCode> {
+    let (selection, source) = resolve_with_source(c, once, authorized_project)?;
+    capture_in_transaction(c, Some(&selection), authorized_project)
+        .map(|snapshot| (snapshot, source))
 }
 pub(crate) fn capture_in_transaction(
     c: &Connection,

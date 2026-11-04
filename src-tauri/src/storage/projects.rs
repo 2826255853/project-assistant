@@ -116,6 +116,21 @@ fn verify(r: &Record) -> Result<VerifiedDirectory, ErrorCode> {
     revalidate_registered_directory(Path::new(&r.view.absolute_path), identity)
 }
 
+/// Task admission calls this after opening its IMMEDIATE transaction. The
+/// verified handles remain alive until that transaction commits or rolls back.
+pub(crate) fn authorize_for_task(
+    connection: &Connection,
+    id: &str,
+) -> Result<(u64, VerifiedDirectory), ErrorCode> {
+    crate::project_contract::ProjectIdRequest {
+        project_id: id.to_owned(),
+    }
+    .validate()?;
+    let project = record(connection, id)?;
+    let verified = verify(&project)?;
+    Ok((project.view.revision, verified))
+}
+
 fn refresh_record(tx: &Connection, r: &Record, correlation: &str) -> Result<bool, ErrorCode> {
     let (availability, authorization) = match verify(r) {
         Ok(_) => ("available", "granted"),

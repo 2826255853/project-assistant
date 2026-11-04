@@ -105,6 +105,154 @@ fn project_settings_revision_migration_backfills_rows_and_preserves_v5_backup() 
 }
 
 #[test]
+fn task_runtime_migration_appends_v7_and_preserves_legacy_rows_and_backup() {
+    let directory = Fixture::new();
+    let mut old = Storage::open_with(&directory.0, &MIGRATIONS[..6]).unwrap();
+    probe::seed(&mut old.connection).unwrap();
+    drop(old);
+
+    let upgraded = Storage::open(&directory.0).unwrap();
+    assert_eq!(
+        upgraded
+            .connection
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        7
+    );
+    assert_eq!(
+        upgraded
+            .connection
+            .query_row("SELECT revision FROM sessions WHERE id='s1'", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        upgraded.connection.query_row("SELECT client_request_id IS NULL AND selection_source IS NULL FROM tasks WHERE id='t1'", [], |r| r.get::<_,bool>(0)).unwrap(),
+        true
+    );
+    assert_eq!(
+        upgraded
+            .connection
+            .query_row("SELECT consumption FROM approvals WHERE id='a1'", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "unconsumed"
+    );
+    assert!(
+        upgraded
+            .connection
+            .execute(
+                "UPDATE ai_config_snapshots SET model_id='changed' WHERE id='snap1'",
+                []
+            )
+            .is_err()
+    );
+    assert!(
+        upgraded
+            .connection
+            .execute("UPDATE tasks SET snapshot_id=NULL WHERE id='t1'", [])
+            .is_err()
+    );
+    assert_eq!(
+        upgraded
+            .connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none(),
+        true
+    );
+    let backup = fs::read_dir(directory.0.join("backups"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let backup = Connection::open_with_flags(backup, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(
+        backup
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+    assert!(
+        backup
+            .prepare("SELECT client_request_id FROM tasks")
+            .is_err()
+    );
+}
+
+#[test]
+fn failed_task_runtime_migration_rolls_back_ddl_and_keeps_v6_backup() {
+    let directory = Fixture::new();
+    let old = Storage::open_with(&directory.0, &MIGRATIONS[..6]).unwrap();
+    old.connection
+        .execute_batch("CREATE TABLE task_events (collision INTEGER);")
+        .unwrap();
+    drop(old);
+    let failure = Storage::open(&directory.0).err().unwrap();
+    assert_eq!(failure.code, "STORAGE_MIGRATION_FAILED");
+    let current = Connection::open_with_flags(
+        directory.0.join(DATABASE_NAME),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    assert_eq!(
+        current
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+    assert!(
+        current
+            .prepare("SELECT client_request_id FROM sessions")
+            .is_err()
+    );
+    let backup = Connection::open_with_flags(
+        failure.backup_path.unwrap(),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    assert_eq!(
+        backup
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+}
+
+#[test]
+fn task_runtime_backup_failure_preserves_v6_without_partial_columns() {
+    let directory = Fixture::new();
+    let old = Storage::open_with(&directory.0, &MIGRATIONS[..6]).unwrap();
+    drop(old);
+    fs::write(directory.0.join("backups"), "synthetic backup blocker").unwrap();
+    let failure = Storage::open(&directory.0).err().unwrap();
+    assert_eq!(failure.code, "STORAGE_BACKUP_FAILED");
+    let original = Connection::open_with_flags(
+        directory.0.join(DATABASE_NAME),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    assert_eq!(
+        original
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+    assert!(
+        original
+            .prepare("SELECT client_request_id FROM sessions")
+            .is_err()
+    );
+    assert!(original.prepare("SELECT task_id FROM task_events").is_err());
+}
+
+#[test]
 fn successful_upgrade_backs_up_committed_wal() {
     let (directory, storage) = fixture();
     // Keep this writer open: its committed data still lives in WAL.
@@ -450,7 +598,7 @@ fn approval_and_task_lifecycle_constraints() {
             .is_err()
     );
     // Cancellation during preparation has no fabricated runtime configuration.
-    storage.connection.execute("INSERT INTO tasks VALUES ('cancel-before-start', 's1', NULL, NULL, NULL, NULL, 'cancelled', NULL, 1000, NULL, 1001)", []).unwrap();
+    storage.connection.execute("INSERT INTO tasks(id,session_id,external_turn_id,snapshot_id,prompt_summary_redacted,result_summary_redacted,status,error_code,created_at,started_at,finished_at) VALUES ('cancel-before-start', 's1', NULL, NULL, NULL, NULL, 'cancelled', NULL, 1000, NULL, 1001)", []).unwrap();
 }
 
 #[test]
@@ -704,7 +852,7 @@ fn startup_recovery_interrupts_work_and_is_idempotent() {
     storage
         .connection
         .execute_batch(
-            "UPDATE tasks SET status = 'running', started_at = 1001, finished_at = NULL, snapshot_id = 'snap1' WHERE id = 't1'; UPDATE approvals SET decision = 'pending', decided_at = NULL WHERE id = 'a1';",
+            "INSERT INTO ai_config_snapshots SELECT 'recovery-snapshot',profile_id,profile_name,source_kind,endpoint,endpoint_origin,wire_api,auth_kind,credential_ref,credential_revision,model_id,effort,config_revision,capability_source,capability_version,adapter_version,routing_scope,effective_at,captured_at FROM ai_config_snapshots WHERE id='snap1'; INSERT INTO tasks(id,session_id,snapshot_id,status,created_at,started_at) VALUES('recovery-task','s1','recovery-snapshot','running',1000,1001); INSERT INTO approvals(id,task_id,external_request_id,operation_kind,decision,requested_at) VALUES('recovery-approval','recovery-task','request-recovery','command','pending',1001); INSERT INTO approvals(id,task_id,external_request_id,operation_kind,decision,requested_at,decided_at,expires_at,operation_fingerprint,window_label,consumption,consume_request_id) VALUES('claimed-approval','recovery-task','request-claimed','command','approved',1001,1002,2000,replace(hex(zeroblob(32)),'00','aa'),'main','claimed','consume-recovery');",
         )
         .unwrap();
     let first = storage.recover_on_startup("recovery-1").unwrap();
@@ -712,23 +860,40 @@ fn startup_recovery_interrupts_work_and_is_idempotent() {
         first,
         RecoverySummary {
             tasks: 1,
-            approvals: 1
+            approvals: 2,
+            sessions: 1,
         }
     );
     assert_eq!(
         storage
             .connection
-            .query_row("SELECT status FROM tasks WHERE id = 't1'", [], |r| r
-                .get::<_, String>(0))
+            .query_row(
+                "SELECT status FROM tasks WHERE id = 'recovery-task'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
             .unwrap(),
         "interrupted"
     );
     assert_eq!(
         storage
             .connection
-            .query_row("SELECT decision FROM approvals WHERE id = 'a1'", [], |r| {
-                r.get::<_, String>(0)
-            })
+            .query_row(
+                "SELECT consumption FROM approvals WHERE id='claimed-approval'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "abandoned"
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row(
+                "SELECT decision FROM approvals WHERE id = 'recovery-approval'",
+                [],
+                |r| { r.get::<_, String>(0) }
+            )
             .unwrap(),
         "interrupted"
     );
@@ -747,7 +912,8 @@ fn startup_recovery_interrupts_work_and_is_idempotent() {
         storage.recover_on_startup("recovery-2").unwrap(),
         RecoverySummary {
             tasks: 0,
-            approvals: 0
+            approvals: 0,
+            sessions: 0,
         }
     );
     assert_eq!(
@@ -760,6 +926,59 @@ fn startup_recovery_interrupts_work_and_is_idempotent() {
             )
             .unwrap(),
         1
+    );
+}
+
+#[test]
+fn startup_recovery_audit_failure_rolls_back_task_session_approval_and_journal() {
+    let (directory, storage) = fixture();
+    storage.connection.execute_batch("INSERT INTO ai_config_snapshots SELECT 'recovery-failure-snapshot',profile_id,profile_name,source_kind,endpoint,endpoint_origin,wire_api,auth_kind,credential_ref,credential_revision,model_id,effort,config_revision,capability_source,capability_version,adapter_version,routing_scope,effective_at,captured_at FROM ai_config_snapshots WHERE id='snap1'; INSERT INTO tasks(id,session_id,snapshot_id,status,created_at,started_at) VALUES('recovery-failure-task','s1','recovery-failure-snapshot','running',1000,1001); INSERT INTO approvals(id,task_id,external_request_id,operation_kind,decision,requested_at) VALUES('recovery-failure-approval','recovery-failure-task','request-recovery-failure','command','pending',1001); CREATE TRIGGER reject_recovery_audit BEFORE INSERT ON audit_events WHEN NEW.event_kind='storage_recovery' BEGIN SELECT RAISE(ABORT,'synthetic-recovery-audit'); END;").unwrap();
+    let runtime = StorageState::default();
+    let failure = runtime
+        .initialize(&directory.0, &crate::ipc::correlation_id())
+        .unwrap_err();
+    assert_eq!(failure.public_code(), "PA_AUDIT_WRITE_FAILED");
+    assert_eq!(runtime.health().state, "unavailable");
+    assert_eq!(
+        storage
+            .connection
+            .query_row(
+                "SELECT status FROM tasks WHERE id='recovery-failure-task'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "running"
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row("SELECT status FROM sessions WHERE id='s1'", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "active"
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row(
+                "SELECT decision FROM approvals WHERE id='recovery-failure-approval'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "pending"
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row(
+                "SELECT count(*) FROM task_events WHERE task_id='recovery-failure-task'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
     );
 }
 
@@ -1069,6 +1288,10 @@ fn audit_retention_rejects_clock_anomalies_without_deleting() {
 #[test]
 fn startup_prunes_only_audit_and_cleanup_failure_preserves_data() {
     let (directory, storage) = fixture();
+    storage
+        .connection
+        .execute("UPDATE sessions SET status='closed'", [])
+        .unwrap();
     let runtime = StorageState::default();
     runtime
         .initialize(&directory.0, &crate::ipc::correlation_id())
@@ -1092,6 +1315,10 @@ fn startup_prunes_only_audit_and_cleanup_failure_preserves_data() {
         "denied"
     );
     let (failed_directory, failed_storage) = fixture();
+    failed_storage
+        .connection
+        .execute("UPDATE sessions SET status='closed'", [])
+        .unwrap();
     failed_storage.connection.execute_batch(
         "CREATE TRIGGER fail_audit_delete BEFORE DELETE ON audit_events BEGIN SELECT RAISE(ABORT,'injected cleanup failure'); END;"
     ).unwrap();

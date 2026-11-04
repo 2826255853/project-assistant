@@ -114,6 +114,20 @@ pub enum ErrorCode {
     CredentialBusy,
     #[serde(rename = "PA_CREDENTIALS_STORAGE_FAILED")]
     CredentialsStorageFailed,
+    #[serde(rename = "PA_SESSION_NOT_FOUND")]
+    SessionNotFound,
+    #[serde(rename = "PA_SESSION_PROJECT_MISMATCH")]
+    SessionProjectMismatch,
+    #[serde(rename = "PA_SESSION_CLOSED")]
+    SessionClosed,
+    #[serde(rename = "PA_SESSION_BUSY")]
+    SessionBusy,
+    #[serde(rename = "PA_TASK_NOT_FOUND")]
+    TaskNotFound,
+    #[serde(rename = "PA_TASK_CONFLICT_REVISION")]
+    TaskConflictRevision,
+    #[serde(rename = "PA_TASK_QUEUE_FULL")]
+    TaskQueueFull,
     #[serde(rename = "PA_PROJECT_NOT_FOUND")]
     ProjectNotFound,
     #[serde(rename = "PA_PROJECT_PICKER_FAILED")]
@@ -351,6 +365,41 @@ impl ErrorCode {
                 "凭据状态保存失败，原可用状态已保留或已标记不可用。",
                 "请检查应用数据目录权限和 Windows 凭据服务后重新读取状态。",
             ),
+            Self::SessionNotFound => (
+                ErrorCategory::Validation,
+                "会话记录不存在。",
+                "请重新读取项目会话列表。",
+            ),
+            Self::SessionProjectMismatch => (
+                ErrorCategory::Permission,
+                "会话不属于当前项目。",
+                "请重新读取当前项目的会话列表。",
+            ),
+            Self::SessionClosed => (
+                ErrorCategory::Conflict,
+                "会话已结束，不能继续提交任务。",
+                "请恢复可恢复的会话或创建新会话。",
+            ),
+            Self::SessionBusy => (
+                ErrorCategory::Conflict,
+                "会话仍有未结束的任务。",
+                "请等待任务进入终态后重试。",
+            ),
+            Self::TaskNotFound => (
+                ErrorCategory::Validation,
+                "任务记录不存在。",
+                "请重新读取当前会话的任务列表。",
+            ),
+            Self::TaskConflictRevision => (
+                ErrorCategory::Conflict,
+                "任务或会话状态已变化。",
+                "请重新读取权威状态后再操作。",
+            ),
+            Self::TaskQueueFull => (
+                ErrorCategory::Conflict,
+                "当前未结束任务数量已达上限。",
+                "请等待现有任务结束后重试。",
+            ),
             Self::ProjectNotFound => (
                 ErrorCategory::Validation,
                 "项目记录不存在或当前不可用于此操作。",
@@ -429,6 +478,9 @@ impl ErrorCode {
                     | Self::ProjectPathUnavailable
                     | Self::ProjectOpenTimeout
                     | Self::ProjectConflictRevision
+                    | Self::SessionBusy
+                    | Self::TaskConflictRevision
+                    | Self::TaskQueueFull
             ),
         }
     }

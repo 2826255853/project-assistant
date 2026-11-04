@@ -13,7 +13,7 @@ const taskCommands = [
   "overlay_task_cancel", "overlay_task_find_by_request",
 ];
 
-test("S3-01 task contracts stay future-only until their service and authorization gates ship", async () => {
+test("task IPC commands stay unregistered until their service and authorization gates ship", async () => {
   const [contracts, taskContracts, client, rust, manifest, main, overlay] = await Promise.all([
     read("../../src/ipc/contracts.ts"), read("../../src/ipc/taskContracts.ts"),
     read("../../src/ipc/client.ts"), read("../../src-tauri/src/lib.rs"),
@@ -27,7 +27,7 @@ test("S3-01 task contracts stay future-only until their service and authorizatio
     assert.match(taskContracts, new RegExp(`\\b${name}:`));
     assert.ok(!contracts.match(/export interface ImplementedCommandMap \{([\s\S]*?)^\}/m)?.[1].includes(name), `${name} must stay unimplemented`);
     assert.ok(!client.includes(`"${name}"`), `${name} must not have an invocation path`);
-    assert.ok(!rust.includes(`fn ${name}(`), `${name} must not have a Rust handler`);
+    assert.doesNotMatch(rust, new RegExp(`#\\[tauri::command\\]\\s*(?:async\\s+)?fn\\s+${name}\\s*\\(`), `${name} must not have a Rust IPC handler`);
     assert.ok(!manifest.includes(`"${name}"`), `${name} must not be registered`);
     assert.ok(!main.permissions.some(p => p === `allow-${name.replaceAll("_", "-")}`));
     assert.ok(!overlay.permissions.some(p => p === `allow-${name.replaceAll("_", "-")}`));

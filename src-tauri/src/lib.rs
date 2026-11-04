@@ -13,6 +13,7 @@ mod providers;
 pub mod safety;
 mod settings;
 pub mod storage;
+mod tasks;
 use tauri::Manager;
 
 fn project_request<T: serde::de::DeserializeOwned>(

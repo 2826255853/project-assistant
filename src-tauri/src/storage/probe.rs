@@ -17,13 +17,13 @@ pub fn seed(connection: &mut Connection) -> Result<(), StorageError> {
           'credential:provider1:1', 1, 'fixture-model', 'fixture-effort', 1, 1, 1000, 1000, 'configured_unverified');
         INSERT INTO model_capabilities VALUES ('provider1', 'fixture-model', 'fixture-effort', 4096, 1,
           'connection_probe', 'fixture-v1', 1, 1000, 2000);
-        INSERT INTO sessions VALUES ('s1', 'p1', 'fixture-thread', NULL, 'active', 1000, 1000);
+        INSERT INTO sessions(id,project_id,external_session_id,summary_redacted,status,created_at,updated_at) VALUES ('s1', 'p1', 'fixture-thread', NULL, 'active', 1000, 1000);
         INSERT INTO ai_config_snapshots VALUES ('snap1', 'provider1', '合成服务', 'relay',
           'https://fixture.invalid/v1', 'https://fixture.invalid', 'responses', 'api_key',
           'credential:provider1:1', 1, 'fixture-model', 'fixture-effort', 1, 'connection_probe',
           'fixture-v1', 'fixture-adapter-v1', 'owned_process', 1000, 1001);
-        INSERT INTO tasks VALUES ('t1', 's1', 'fixture-turn', 'snap1', NULL, NULL, 'completed', NULL, 1000, 1001, 1002);
-        INSERT INTO approvals VALUES ('a1', 't1', 'fixture-request', 'command', NULL, 'denied', 1001, 1002);
+        INSERT INTO tasks(id,session_id,external_turn_id,snapshot_id,prompt_summary_redacted,result_summary_redacted,status,error_code,created_at,started_at,finished_at) VALUES ('t1', 's1', 'fixture-turn', 'snap1', NULL, NULL, 'completed', NULL, 1000, 1001, 1002);
+        INSERT INTO approvals(id,task_id,external_request_id,operation_kind,operation_summary_redacted,decision,requested_at,decided_at) VALUES ('a1', 't1', 'fixture-request', 'command', NULL, 'denied', 1001, 1002);
         INSERT INTO settings VALUES ('global-ai', 'global', NULL, 'ai_defaults', NULL, NULL, 'provider1', 'fixture-model', 'fixture-effort', 1, 1000);
         INSERT INTO settings VALUES ('project-ai', 'project', 'p1', 'ai_defaults', NULL, NULL, 'provider1', 'project-model', NULL, 1, 1000);
         INSERT INTO audit_events VALUES ('e1', 1002, 'fixture-correlation', 'approval_decision', 'denied', NULL, 'p1', 't1', 'a1', 'provider1', 'fixture-model', 'fixture-effort');
