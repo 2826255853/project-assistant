@@ -31,6 +31,22 @@ fn project_request<T: serde::de::DeserializeOwned>(
     ipc::parse_request(request)
 }
 
+fn task_request<T: serde::de::DeserializeOwned>(
+    window: &tauri::WebviewWindow,
+    request: serde_json::Value,
+    max_bytes: usize,
+) -> Result<T, ipc::ErrorCode> {
+    ipc::authorize(window, true)?;
+    if serde_json::to_vec(&request)
+        .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+        .len()
+        > max_bytes
+    {
+        return Err(ipc::ErrorCode::InputTooLarge);
+    }
+    ipc::parse_request(request)
+}
+
 #[tauri::command]
 async fn projects_add_from_picker(
     request: serde_json::Value,
@@ -273,6 +289,189 @@ async fn project_select(
                 .map_err(|_| ipc::ErrorCode::InternalUnexpected)
         });
     complete(&app, "project_select", id, result)
+}
+
+#[tauri::command]
+fn session_create(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::SessionReceipt> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::SessionCreateRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::session_create(&app, p, &id)
+    });
+    complete(&app, "session_create", id, result)
+}
+
+#[tauri::command]
+fn session_find_by_request(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<Option<storage::tasks::SessionRecord>> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::SessionFindRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::session_find(&app, p)
+    });
+    complete(&app, "session_find_by_request", id, result)
+}
+
+#[tauri::command]
+fn sessions_list(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<tasks::SessionPage> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::SessionsListRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::sessions_list(&app, p)
+    });
+    complete(&app, "sessions_list", id, result)
+}
+
+#[tauri::command]
+fn session_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::SessionRecord> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::SessionGetRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::session_get(&app, p)
+    });
+    complete(&app, "session_get", id, result)
+}
+
+#[tauri::command]
+fn session_resume(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::SessionRecord> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::SessionResumeRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::session_resume(&app, p, &id)
+    });
+    complete(&app, "session_resume", id, result)
+}
+
+#[tauri::command]
+fn session_end(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::SessionRecord> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::SessionEndRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::session_end(&app, p, &id)
+    });
+    complete(&app, "session_end", id, result)
+}
+
+#[tauri::command]
+fn task_start(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::TaskReceipt> {
+    let id = ipc::correlation_id();
+    let result =
+        task_request::<tasks::TaskStartRequest>(&window, request, 80 * 1024).and_then(|p| {
+            p.validate()?;
+            tasks::start(&app, p, &id)
+        });
+    complete(&app, "task_start", id, result)
+}
+
+#[tauri::command]
+fn task_find_by_request(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<Option<storage::tasks::TaskRecord>> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::TaskFindRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::find(&app, p)
+    });
+    complete(&app, "task_find_by_request", id, result)
+}
+
+#[tauri::command]
+fn tasks_list(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<tasks::TaskPage> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::TasksListRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::list(&app, p)
+    });
+    complete(&app, "tasks_list", id, result)
+}
+
+#[tauri::command]
+fn task_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::TaskRecord> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::TaskGetRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::get(&app, p)
+    });
+    complete(&app, "task_get", id, result)
+}
+
+#[tauri::command]
+fn task_cancel(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::CancelReceipt> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::TaskCancelRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::cancel(&app, p, &id)
+    });
+    complete(&app, "task_cancel", id, result)
+}
+
+#[tauri::command]
+fn task_events_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::EventPage> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::TaskEventsRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::events(&app, p)
+    });
+    complete(&app, "task_events_get", id, result)
+}
+
+#[tauri::command]
+fn approvals_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<tasks::ApprovalPage> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::ApprovalsRequest>(&window, request).and_then(|p| {
+        p.validate()?;
+        tasks::approvals(&app, p)
+    });
+    complete(&app, "approvals_get", id, result)
 }
 
 #[tauri::command]
@@ -980,6 +1179,7 @@ pub fn run() {
         .manage(credentials::CredentialsState::default())
         .manage(owned_process::OwnedProcessState::default())
         .manage(providers::ProvidersState::default())
+        .manage(tasks::TaskRuntimeState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -1091,6 +1291,19 @@ pub fn run() {
             project_pick_file,
             project_remove,
             project_select,
+            session_create,
+            session_find_by_request,
+            sessions_list,
+            session_get,
+            session_resume,
+            session_end,
+            task_start,
+            task_find_by_request,
+            tasks_list,
+            task_get,
+            task_cancel,
+            task_events_get,
+            approvals_get,
             desktop_initialize,
             app_get_status,
             settings_get,
@@ -1116,9 +1329,19 @@ pub fn run() {
             framework_probe,
             phase0_check_open_path
         ])
-        .run(tauri::generate_context!());
-    if result.is_err() {
-        eprintln!("PA_INTERNAL_STARTUP_FAILED");
-        std::process::exit(1);
+        .build(tauri::generate_context!());
+    match result {
+        Ok(app) => app.run(|handle, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                handle.state::<tasks::TaskRuntimeState>().cancel_all();
+            }
+        }),
+        Err(_) => {
+            eprintln!("PA_INTERNAL_STARTUP_FAILED");
+            std::process::exit(1);
+        }
     }
 }

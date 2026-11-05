@@ -1,10 +1,15 @@
 //! Typed session/task persistence used by S3-03. This module never stores
 //! prompt, reply, protocol frames, credentials, paths, or arbitrary summaries.
 use super::{audit_time, repositories};
-use crate::{ipc::ErrorCode, providers, providers::PublicSnapshot};
+use crate::{
+    ipc::{AppError, ErrorCode},
+    providers,
+    providers::PublicSnapshot,
+};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 const MAX_PAGE: u16 = 100;
@@ -33,13 +38,32 @@ pub struct TaskRecord {
     pub revision: i64,
     pub snapshot: PublicSnapshot,
     pub selection_source: String,
-    pub error_code: Option<String>,
+    pub error: Option<AppError>,
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub last_event_sequence: i64,
     pub content_revision: i64,
     pub content_available: bool,
+}
+
+/// Internal handoff used by the owned-process gateway. The verified project
+/// path is never serialized to IPC or written to audit records.
+#[derive(Debug)]
+pub(crate) struct TaskLaunchRecord {
+    pub task: TaskRecord,
+    pub project_path: PathBuf,
+    pub(crate) _proof: DirectoryProof,
+}
+impl TaskLaunchRecord {
+    #[cfg(windows)]
+    pub(crate) fn project_identity_value(&self) -> String {
+        self._proof.identity.storage_value()
+    }
+    #[cfg(not(windows))]
+    pub(crate) fn project_identity_value(&self) -> Result<String, ErrorCode> {
+        Err(ErrorCode::ProjectPathUnavailable)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -508,6 +532,235 @@ impl<'a> TaskRepository<'a> {
         let task = task_get(self.connection, id)?.ok_or(ErrorCode::TaskNotFound)?;
         let _proof = authorized_project(self.connection, &task.project_id)?;
         Ok(task)
+    }
+
+    pub(crate) fn task_launch(&mut self, id: &str) -> Result<TaskLaunchRecord, ErrorCode> {
+        let task = self.task_get(id)?;
+        if !matches!(task.status.as_str(), "preparing" | "running") {
+            return Err(ErrorCode::TaskConflictRevision);
+        }
+        #[cfg(windows)]
+        {
+            let (revision, verified) = authorized_project(self.connection, &task.project_id)?;
+            let admitted_revision: i64 = self
+                .connection
+                .query_row(
+                    "SELECT project_revision FROM tasks WHERE id=?1",
+                    [&task.id],
+                    |row| row.get(0),
+                )
+                .map_err(sql)?;
+            if revision != admitted_revision as u64 {
+                return Err(ErrorCode::ProjectConflictRevision);
+            }
+            return Ok(TaskLaunchRecord {
+                task,
+                project_path: verified.canonical_path.clone(),
+                _proof: verified,
+            });
+        }
+        #[cfg(not(windows))]
+        {
+            Err(ErrorCode::ProjectPathUnavailable)
+        }
+    }
+
+    /// Publish a bounded content revision without storing the content itself.
+    /// The actual reply/progress bytes remain in the gateway's authorized
+    /// runtime buffer until a later content-read service is attached.
+    pub(crate) fn content_changed(
+        &mut self,
+        id: &str,
+        channel: &str,
+        content_revision: i64,
+        correlation: &str,
+    ) -> Result<TaskRecord, ErrorCode> {
+        if !matches!(channel, "reply" | "progress") || !(1..=MAX_SAFE).contains(&content_revision) {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        let current = task_get_tx(&tx, id)?.ok_or(ErrorCode::TaskNotFound)?;
+        let _proof = authorized_project(&tx, &current.project_id)?;
+        if is_terminal(&current.status) || content_revision <= current.content_revision {
+            return Err(ErrorCode::TaskConflictRevision);
+        }
+        let at = now()?;
+        tx.execute(
+            "UPDATE tasks SET content_revision=?1 WHERE id=?2",
+            params![content_revision, id],
+        )
+        .map_err(sql)?;
+        insert_event(
+            &tx,
+            id,
+            "content_changed",
+            None,
+            None,
+            None,
+            None,
+            Some(channel),
+            Some(content_revision),
+            at,
+        )?;
+        record_audit(
+            &tx,
+            correlation,
+            &current.project_id,
+            Some(id),
+            "success",
+            None,
+            at,
+        )?;
+        let result = task_get_tx(&tx, id)?.ok_or(ErrorCode::TaskNotFound)?;
+        tx.commit().map_err(sql)?;
+        Ok(result)
+    }
+
+    pub(crate) fn bind_external_context(
+        &mut self,
+        id: &str,
+        expected_revision: i64,
+        external_session_id: &str,
+        external_turn_id: &str,
+        correlation: &str,
+    ) -> Result<TaskRecord, ErrorCode> {
+        if external_session_id.is_empty()
+            || external_session_id.len() > 128
+            || !external_session_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            || external_turn_id.is_empty()
+            || external_turn_id.len() > 128
+            || !external_turn_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        let current = task_get_tx(&tx, id)?.ok_or(ErrorCode::TaskNotFound)?;
+        let _proof = authorized_project(&tx, &current.project_id)?;
+        if current.revision != expected_revision
+            || !matches!(current.status.as_str(), "preparing" | "running")
+        {
+            return Err(ErrorCode::TaskConflictRevision);
+        }
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT external_turn_id FROM tasks WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if existing
+            .as_deref()
+            .is_some_and(|value| value != external_turn_id)
+        {
+            return Err(ErrorCode::TaskConflictRevision);
+        }
+        let at = now()?;
+        tx.execute(
+            "UPDATE sessions SET updated_at=max(updated_at,?1) WHERE id=?2",
+            params![at, current.session_id],
+        )
+        .map_err(sql)?;
+        tx.execute(
+            "UPDATE sessions SET external_session_id=?1 WHERE id=?2",
+            params![external_session_id, current.session_id],
+        )
+        .map_err(sql)?;
+        tx.execute(
+            "UPDATE tasks SET external_turn_id=?1 WHERE id=?2",
+            params![external_turn_id, id],
+        )
+        .map_err(sql)?;
+        record_audit(
+            &tx,
+            correlation,
+            &current.project_id,
+            Some(id),
+            "success",
+            None,
+            at,
+        )?;
+        let result = task_get_tx(&tx, id)?.ok_or(ErrorCode::TaskNotFound)?;
+        tx.commit().map_err(sql)?;
+        Ok(result)
+    }
+
+    /// Until the approval-decision service is available, every external
+    /// high-risk request is recorded and denied atomically before the gateway
+    /// sends the denial back to the owned CLI.
+    pub(crate) fn approval_deny_by_default(
+        &mut self,
+        task_id: &str,
+        approval_id: &str,
+        expected_task_revision: i64,
+        correlation: &str,
+    ) -> Result<TaskRecord, ErrorCode> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        let current = task_get_tx(&tx, task_id)?.ok_or(ErrorCode::TaskNotFound)?;
+        let _proof = authorized_project(&tx, &current.project_id)?;
+        if current.revision != expected_task_revision || current.status != "approval_required" {
+            return Err(ErrorCode::TaskConflictRevision);
+        }
+        let approval = approval_by_id(&tx, approval_id)?.ok_or(ErrorCode::InvalidRequest)?;
+        if approval.task_id != task_id || approval.decision != "pending" {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let task_revision = expected_task_revision
+            .checked_add(1)
+            .filter(|value| *value <= MAX_SAFE)
+            .ok_or(ErrorCode::TaskConflictRevision)?;
+        let approval_revision = approval
+            .revision
+            .checked_add(1)
+            .filter(|value| *value <= MAX_SAFE)
+            .ok_or(ErrorCode::TaskConflictRevision)?;
+        let at = now()?;
+        tx.execute(
+            "UPDATE approvals SET decision='denied',decided_at=?1,revision=?2 WHERE id=?3 AND decision='pending' AND revision=?4",
+            params![at, approval_revision, approval_id, approval.revision],
+        )
+        .map_err(sql)?;
+        tx.execute(
+            "UPDATE tasks SET status='running',revision=?1 WHERE id=?2 AND revision=?3 AND status='approval_required'",
+            params![task_revision, task_id, expected_task_revision],
+        )
+        .map_err(sql)?;
+        insert_event(
+            &tx,
+            task_id,
+            "status",
+            Some("running"),
+            Some(task_revision),
+            None,
+            None,
+            None,
+            None,
+            at,
+        )?;
+        record_audit(
+            &tx,
+            correlation,
+            &current.project_id,
+            Some(task_id),
+            "failure",
+            None,
+            at,
+        )?;
+        let result = task_get_tx(&tx, task_id)?.ok_or(ErrorCode::TaskNotFound)?;
+        tx.commit().map_err(sql)?;
+        Ok(result)
     }
 
     /// The gateway is the only caller allowed to advance durable task state.
@@ -1100,8 +1353,14 @@ fn task_get(c: &Connection, id: &str) -> Result<Option<TaskRecord>, ErrorCode> {
 }
 fn task_get_tx(c: &Connection, id: &str) -> Result<Option<TaskRecord>, ErrorCode> {
     c.query_row("SELECT t.id,t.session_id,s.project_id,t.client_request_id,t.status,t.revision,t.selection_source,t.error_code,t.created_at,t.started_at,t.finished_at,t.last_event_sequence,t.content_revision,a.id,a.profile_id,a.profile_name,a.source_kind,a.endpoint,a.model_id,a.effort,a.config_revision,a.credential_revision,a.effective_at,a.routing_scope FROM tasks t JOIN sessions s ON s.id=t.session_id JOIN ai_config_snapshots a ON a.id=t.snapshot_id WHERE t.id=?1 AND t.client_request_id IS NOT NULL AND t.selection_source IS NOT NULL", [id], |r| {
+        let error_code: Option<String> = r.get(7)?;
+        let error = error_code.and_then(|code| {
+            serde_json::from_value::<ErrorCode>(serde_json::Value::String(code))
+                .ok()
+                .map(ErrorCode::public)
+        });
         let snapshot = PublicSnapshot{id:r.get(13)?,profile_id:r.get(14)?,profile_name:r.get(15)?,source_kind:r.get(16)?,endpoint:r.get(17)?,model_id:r.get(18)?,effort:r.get(19)?,config_revision:r.get(20)?,credential_revision:r.get(21)?,effective_at:r.get(22)?,routing_scope:"owned_process"};
-        Ok(TaskRecord{id:r.get(0)?,session_id:r.get(1)?,project_id:r.get(2)?,client_request_id:r.get(3)?,status:r.get(4)?,revision:r.get(5)?,selection_source:r.get(6)?,error_code:r.get(7)?,created_at:r.get(8)?,started_at:r.get(9)?,finished_at:r.get(10)?,last_event_sequence:r.get(11)?,content_revision:r.get(12)?,snapshot,content_available:false})
+        Ok(TaskRecord{id:r.get(0)?,session_id:r.get(1)?,project_id:r.get(2)?,client_request_id:r.get(3)?,status:r.get(4)?,revision:r.get(5)?,selection_source:r.get(6)?,error,created_at:r.get(8)?,started_at:r.get(9)?,finished_at:r.get(10)?,last_event_sequence:r.get(11)?,content_revision:r.get(12)?,snapshot,content_available:false})
     }).optional().map_err(sql)
 }
 

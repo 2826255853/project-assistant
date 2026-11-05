@@ -25,11 +25,12 @@ test("operation union enforces result error exclusivity and all recovery outcome
  assert.equal(isOperation({...base,phase:"completed",result:{outcome:"rollback_failed",active:selection,configState:"error",error}}),false);
  assert.equal(isOperation({...base,phase:"completed",result:{testedRevision:2,testedAt:1000,authenticated:true,modelAccepted:true,effortAccepted:true,evidence:"connection_probe"}}),true);
 });
-test("all nine provider commands have explicit main-only permissions and no task entry",async()=>{
+test("all nine provider commands have explicit main-only permissions",async()=>{
  const names=["providers_list","provider_save","provider_set_enabled","provider_delete","provider_models","provider_test","provider_switch","operation_get","operation_cancel"];
  const main=JSON.parse(await readFile(new URL("../../src-tauri/capabilities/default.json",import.meta.url),"utf8"));
  const overlay=JSON.parse(await readFile(new URL("../../src-tauri/capabilities/overlay.json",import.meta.url),"utf8"));
  const lib=await readFile(new URL("../../src-tauri/src/lib.rs",import.meta.url),"utf8");
  for(const n of names){assert.ok(main.permissions.includes("allow-"+n.replaceAll("_","-")));assert.ok(!overlay.permissions.includes("allow-"+n.replaceAll("_","-")));assert.match(lib,new RegExp("async fn "+n));}
- assert.ok(!main.permissions.some(p=>/task-start|snapshot/.test(p)));
+ assert.ok(!overlay.permissions.some(p=>/^allow-(session|task|approvals)/.test(p)));
+ assert.ok(!main.permissions.includes("allow-approval-decide"));
 });

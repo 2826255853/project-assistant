@@ -66,6 +66,84 @@ export interface OverlayTaskView {
   approvalPending: boolean; errorCode: string | null;
 }
 export interface OverlayTaskReceipt { task: OverlayTaskView; duplicate: boolean }
+
+const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const exact = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).length === keys.length && keys.every(key => key in value);
+const uuid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+const revision = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 1;
+const time = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+const bounded = (value: unknown, limit: number) => typeof value === "string" && new TextEncoder().encode(value).length <= limit && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value);
+function isAppError(value: unknown): value is AppError {
+  return record(value) && exact(value, ["category", "code", "message", "suggestion", "retryable"]) &&
+    typeof value.code === "string" && /^PA_[A-Z0-9_]{1,96}$/.test(value.code) &&
+    ["validation", "permission", "environment", "authentication", "compatibility", "conflict", "timeout", "cancelled", "external", "storage", "internal"].includes(String(value.category)) &&
+    bounded(value.message, 512) && bounded(value.suggestion, 512) && typeof value.retryable === "boolean";
+}
+function isSnapshot(value: unknown): value is PublicSnapshot {
+  return record(value) && exact(value, ["id", "profileId", "profileName", "sourceKind", "endpoint", "modelId", "effort", "configRevision", "credentialRevision", "effectiveAt", "routingScope"]) &&
+    uuid(value.id) && /^[A-Za-z0-9_-]{1,128}$/.test(String(value.profileId)) && bounded(value.profileName, 512) &&
+    (value.sourceKind === "relay" || value.sourceKind === "official") && bounded(value.endpoint, 2048) &&
+    /^[A-Za-z0-9_.-]{1,128}$/.test(String(value.modelId)) &&
+    (value.effort === null || (typeof value.effort === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(value.effort))) &&
+    revision(value.configRevision) && Number.isSafeInteger(value.credentialRevision) && Number(value.credentialRevision) >= 0 &&
+    time(value.effectiveAt) && value.routingScope === "owned_process";
+}
+export function isSessionView(value: unknown): value is SessionView {
+  return record(value) && exact(value, ["id", "projectId", "status", "revision", "createdAt", "updatedAt"]) && uuid(value.id) && uuid(value.projectId) &&
+    ["active", "closed", "interrupted"].includes(String(value.status)) && revision(value.revision) && time(value.createdAt) && time(value.updatedAt);
+}
+export function isSessionReceipt(value: unknown): value is SessionReceipt {
+  return record(value) && exact(value, ["session", "duplicate"]) && isSessionView(value.session) && typeof value.duplicate === "boolean";
+}
+export function isSessionPage(value: unknown): value is { items: SessionView[]; nextCursor: string | null } {
+  return record(value) && exact(value, ["items", "nextCursor"]) && Array.isArray(value.items) && value.items.length <= 100 && value.items.every(isSessionView) &&
+    new Set(value.items.map(item => item.id)).size === value.items.length && (value.nextCursor === null || bounded(value.nextCursor, 512));
+}
+export function isTaskView(value: unknown): value is TaskView {
+  return record(value) && exact(value, ["id", "sessionId", "projectId", "clientRequestId", "status", "revision", "snapshot", "selectionSource", "error", "createdAt", "startedAt", "finishedAt", "lastEventSequence", "contentRevision", "contentAvailable"]) &&
+    uuid(value.id) && uuid(value.sessionId) && uuid(value.projectId) && uuid(value.clientRequestId) &&
+    ["preparing", "running", "approval_required", "cancelling", "completed", "failed", "cancelled", "interrupted"].includes(String(value.status)) && revision(value.revision) && isSnapshot(value.snapshot) &&
+    ["task", "project", "global"].includes(String(value.selectionSource)) && (value.error === null || isAppError(value.error)) && time(value.createdAt) &&
+    (value.startedAt === null || time(value.startedAt)) && (value.finishedAt === null || time(value.finishedAt)) &&
+    Number.isSafeInteger(value.lastEventSequence) && Number(value.lastEventSequence) >= 0 && Number.isSafeInteger(value.contentRevision) && Number(value.contentRevision) >= 0 && typeof value.contentAvailable === "boolean";
+}
+export function isTaskReceipt(value: unknown): value is TaskReceipt {
+  return record(value) && exact(value, ["task", "duplicate"]) && isTaskView(value.task) && typeof value.duplicate === "boolean";
+}
+export function isTaskPage(value: unknown): value is { items: TaskView[]; nextCursor: string | null } {
+  return record(value) && exact(value, ["items", "nextCursor"]) && Array.isArray(value.items) && value.items.length <= 100 && value.items.every(isTaskView) &&
+    new Set(value.items.map(item => item.id)).size === value.items.length && (value.nextCursor === null || bounded(value.nextCursor, 512));
+}
+export function isCancelReceipt(value: unknown): value is CancelReceipt {
+  return record(value) && exact(value, ["accepted", "status", "revision"]) && typeof value.accepted === "boolean" &&
+    ["preparing", "running", "approval_required", "cancelling", "completed", "failed", "cancelled", "interrupted"].includes(String(value.status)) && revision(value.revision);
+}
+function isEventData(value: unknown): value is TaskEventData {
+  if (!record(value) || typeof value.type !== "string") return false;
+  if (value.type === "status") return exact(value, ["type", "status", "revision"]) && ["preparing", "running", "approval_required", "cancelling"].includes(String(value.status)) && revision(value.revision);
+  if (value.type === "content_changed") return exact(value, ["type", "channel", "contentRevision"]) && ["reply", "progress"].includes(String(value.channel)) && revision(value.contentRevision);
+  if (value.type === "approval") return exact(value, ["type", "approvalId"]) && uuid(value.approvalId);
+  if (value.type === "completed") return exact(value, ["type", "status", "revision"]) && ["completed", "cancelled", "interrupted"].includes(String(value.status)) && revision(value.revision);
+  if (value.type === "failed") return exact(value, ["type", "code", "revision"]) && typeof value.code === "string" && /^PA_[A-Z0-9_]{1,96}$/.test(value.code) && revision(value.revision);
+  return false;
+}
+export function isTaskEventPage(value: unknown): value is TaskEventPage {
+  return record(value) && exact(value, ["taskId", "events", "nextCursor", "throughSequence", "resetRequired"]) && uuid(value.taskId) && Array.isArray(value.events) && value.events.length <= 100 &&
+    value.events.every(event => record(event) && exact(event, ["taskId", "sequence", "occurredAt", "data"]) && event.taskId === value.taskId && revision(event.sequence) && time(event.occurredAt) && isEventData(event.data)) &&
+    (value.nextCursor === null || bounded(value.nextCursor, 512)) && Number.isSafeInteger(value.throughSequence) && Number(value.throughSequence) >= 0 && typeof value.resetRequired === "boolean";
+}
+export function isApprovalView(value: unknown): value is ApprovalView {
+  return record(value) && exact(value, ["id", "taskId", "sessionId", "revision", "operationKind", "operationFingerprint", "displaySummary", "decision", "consumption", "requestedAt", "expiresAt", "decidedAt"]) &&
+    uuid(value.id) && uuid(value.taskId) && uuid(value.sessionId) && revision(value.revision) &&
+    ["command", "file_change", "unknown"].includes(String(value.operationKind)) &&
+    typeof value.operationFingerprint === "string" && /^[0-9a-f]{64}$/.test(value.operationFingerprint) && bounded(value.displaySummary, 512) &&
+    ["pending", "approved", "denied", "expired", "interrupted"].includes(String(value.decision)) &&
+    ["unconsumed", "claimed", "acknowledged", "abandoned"].includes(String(value.consumption)) &&
+    time(value.requestedAt) && time(value.expiresAt) && (value.decidedAt === null || time(value.decidedAt));
+}
+export function isApprovalPage(value: unknown): value is { items: ApprovalView[] } {
+  return record(value) && exact(value, ["items"]) && Array.isArray(value.items) && value.items.length <= 100 && value.items.every(isApprovalView);
+}
 export interface TaskCommandMap {
   active_context_set: { params: { projectId: string; sessionId: string; selection: AiSelection; expectedContextRevision: number }; data: ActiveTaskContext };
   session_create: { params: { projectId: string; expectedProjectRevision: number; clientRequestId: string }; data: SessionReceipt };
@@ -91,3 +169,6 @@ export interface TaskCommandMap {
   overlay_task_find_by_request: { params: { expectedContextRevision: number; clientRequestId: string }; data: OverlayTaskView | null };
   overlay_task_cancel: { params: { expectedContextRevision: number; expectedTaskRevision: number }; data: CancelReceipt };
 }
+
+// S3-04 exposes the main-window session/task gateway and authoritative state
+// journal only. Approval decisions, content bodies, and overlay commands stay closed.

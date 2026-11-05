@@ -144,6 +144,19 @@ export interface ImplementedCommandMap {
   logs_clear: { params: Record<string, never>; data: LogStatus };
   credential_put: { params: { profileId: string; expectedRevision: number; secret: string }; data: { credential: CredentialState; configRevision: number } };
   credential_remove: { params: { profileId: string; expectedRevision: number }; data: { credential: CredentialState; configRevision: number } };
+  session_create: CommandMap["session_create"];
+  session_find_by_request: CommandMap["session_find_by_request"];
+  sessions_list: CommandMap["sessions_list"];
+  session_get: CommandMap["session_get"];
+  session_resume: CommandMap["session_resume"];
+  session_end: CommandMap["session_end"];
+  task_start: CommandMap["task_start"];
+  task_find_by_request: CommandMap["task_find_by_request"];
+  tasks_list: CommandMap["tasks_list"];
+  task_get: CommandMap["task_get"];
+  task_cancel: CommandMap["task_cancel"];
+  task_events_get: CommandMap["task_events_get"];
+  approvals_get: CommandMap["approvals_get"];
 }
 type Assert<T extends true> = T;
 export type FutureProjectCommandsRemainUnimplemented = Assert<
@@ -152,7 +165,7 @@ export type FutureProjectCommandsRemainUnimplemented = Assert<
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.
 export type FutureTaskCommandsRemainUnimplemented = Assert<
-  Extract<keyof ImplementedCommandMap, keyof TaskCommandMap> extends never ? true : false
+  Extract<keyof ImplementedCommandMap, "task_content_get" | "approval_decide" | "task_changes_get" | "task_change_get" | "active_context_set" | "task_start_from_active" | "overlay_task_get" | "overlay_task_cancel" | "overlay_task_find_by_request"> extends never ? true : false
 >;
 export interface CommandMap extends TaskCommandMap {
   framework_probe: { params: { message: string }; data: ProbeReply };

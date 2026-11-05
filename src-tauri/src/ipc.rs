@@ -128,6 +128,16 @@ pub enum ErrorCode {
     TaskConflictRevision,
     #[serde(rename = "PA_TASK_QUEUE_FULL")]
     TaskQueueFull,
+    #[serde(rename = "PA_TASK_PROTOCOL_INVALID")]
+    TaskProtocolInvalid,
+    #[serde(rename = "PA_TASK_LIMIT_EXCEEDED")]
+    TaskLimitExceeded,
+    #[serde(rename = "PA_TASK_RECOVERY_BLOCKED")]
+    TaskRecoveryBlocked,
+    #[serde(rename = "PA_TASK_OUTPUT_UNAVAILABLE")]
+    TaskOutputUnavailable,
+    #[serde(rename = "PA_STORAGE_RESTART_INTERRUPTED")]
+    StorageRestartInterrupted,
     #[serde(rename = "PA_PROJECT_NOT_FOUND")]
     ProjectNotFound,
     #[serde(rename = "PA_PROJECT_PICKER_FAILED")]
@@ -152,7 +162,7 @@ pub enum ErrorCode {
     ProjectConflictRevision,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppError {
     pub category: ErrorCategory,
@@ -399,6 +409,31 @@ impl ErrorCode {
                 ErrorCategory::Conflict,
                 "当前未结束任务数量已达上限。",
                 "请等待现有任务结束后重试。",
+            ),
+            Self::TaskProtocolInvalid => (
+                ErrorCategory::Compatibility,
+                "任务协议输出无法安全处理，任务已停止。",
+                "请更新 Codex 客户端后重新发起任务。",
+            ),
+            Self::TaskLimitExceeded => (
+                ErrorCategory::Validation,
+                "任务输出超过本地处理上限，任务已停止。",
+                "请缩小任务范围后重新发起。",
+            ),
+            Self::TaskRecoveryBlocked => (
+                ErrorCategory::Internal,
+                "任务运行环境需要重新核验，新任务已阻止。",
+                "请修复服务源、项目授权或自有进程状态后重新启动。",
+            ),
+            Self::TaskOutputUnavailable => (
+                ErrorCategory::Environment,
+                "本次任务内容已不在可读取的本机运行缓冲中。",
+                "请重新发起任务；内容不会从磁盘恢复或重放。",
+            ),
+            Self::StorageRestartInterrupted => (
+                ErrorCategory::Cancelled,
+                "应用退出前仍未结束的任务已中断。",
+                "请检查当前项目和服务源状态后手动重新发起。",
             ),
             Self::ProjectNotFound => (
                 ErrorCategory::Validation,

@@ -170,6 +170,175 @@ fn protocol_frames_and_streams_have_independent_limits_and_raw_errors_never_esca
 }
 
 #[test]
+fn task_accumulator_enforces_total_output_bounds_and_exposes_only_normalized_events() {
+    let mut accumulator = TaskAccumulator::new();
+    let mut received = Vec::new();
+    let mut callback = |event| {
+        received.push(event);
+        Ok(())
+    };
+    accumulator
+        .push(
+            TaskEvent::ReplyDelta {
+                text: "safe reply".into(),
+            },
+            &mut callback,
+        )
+        .unwrap();
+    accumulator
+        .push(
+            TaskEvent::Progress {
+                text: "bounded progress".into(),
+            },
+            &mut callback,
+        )
+        .unwrap();
+    drop(callback);
+    assert_eq!(accumulator.reply, "safe reply");
+    assert_eq!(accumulator.progress, "bounded progress");
+    assert_eq!(received.len(), 2);
+    assert_eq!(accumulator.events, received);
+
+    let large = "x".repeat(MAX_TASK_CONTENT);
+    let mut callback = |_| Ok(());
+    assert_eq!(
+        accumulator.push(TaskEvent::ReplyDelta { text: large }, &mut callback,),
+        Err(Failure::Protocol)
+    );
+}
+
+/// Invoked by `npm run verify:task-gateway` with an explicitly selected real
+/// Codex CLI and two controlled HTTPS sites. The site key is always synthetic.
+#[test]
+#[cfg(windows)]
+#[ignore = "requires real Codex CLI and two controlled synthetic HTTPS sites"]
+fn actual_cli_task_gateway_acceptance() {
+    let executable =
+        Executable::inspect(Path::new(&std::env::var("PA_TASK_CODEX_BIN").unwrap())).unwrap();
+    let root = PathBuf::from(std::env::var("PA_TASK_GATEWAY_ROOT").unwrap());
+    let project = root.join("project 中文");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    let endpoint = std::env::var("PA_TASK_ENDPOINT").unwrap();
+    let profile_id = format!("task-{}", random_token().unwrap());
+    let key = std::env::var("PA_TASK_SYNTHETIC_KEY").unwrap();
+    assert!(key.starts_with("synthetic-task-"));
+    let scenario = std::env::var("PA_TASK_SCENARIO").unwrap();
+    let mut selected = selection(&endpoint);
+    selected.profile_id = profile_id;
+    selected.model = "gpt-5.1-codex-mini".into();
+    selected.effort = "medium".into();
+    selected.fixture = true;
+    if scenario == "project" {
+        fs::create_dir(project.join(".codex")).unwrap();
+    }
+    if scenario != "tls-untrusted" {
+        selected.fixture_ca = Some(fs::read(std::env::var("PA_TASK_CA").unwrap()).unwrap());
+    }
+    let secret = crate::credentials::SecretBuffer::new(key.into_bytes());
+    let cancel = Cancel::default();
+    let timeout = if scenario == "timeout" {
+        Duration::from_secs(4)
+    } else {
+        Duration::from_secs(25)
+    };
+    let mut candidate = match Candidate::start(
+        &root,
+        &executable,
+        selected,
+        secret,
+        Some(&project),
+        cancel.clone(),
+        timeout,
+    ) {
+        Ok(candidate) => candidate,
+        Err(error) if scenario == "project" => {
+            assert_eq!(error, Failure::Unsafe);
+            fs::remove_dir_all(&project).unwrap();
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+            println!(
+                "TASK_GATEWAY_EVIDENCE:{}",
+                json!({"scenario":scenario,"noChildStarted":true,"cleaned":true})
+            );
+            return;
+        }
+        Err(error) => panic!("candidate startup failed: {error:?}"),
+    };
+    if scenario == "drift" {
+        fs::write(
+            candidate.home.path.join("codex/config.toml"),
+            "model_provider = \"external\"",
+        )
+        .unwrap();
+    }
+    if scenario == "cancel" {
+        let cancel = cancel.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(2));
+            cancel.cancel();
+        });
+    }
+    let mut event_kinds = Vec::new();
+    let mut result = candidate.task(
+        "S3_04_PROMPT_SENTINEL: report the controlled response only.",
+        &mut |event| {
+            event_kinds.push(match &event {
+                TaskEvent::Started { .. } => "started",
+                TaskEvent::Running => "running",
+                TaskEvent::ReplyDelta { .. } => "reply_delta",
+                TaskEvent::Progress { .. } => "progress",
+                TaskEvent::ApprovalRequired { .. } => "approval_required",
+                TaskEvent::Completed => "completed",
+                TaskEvent::Cancelled => "cancelled",
+                TaskEvent::Failed => "failed",
+            });
+            Ok(())
+        },
+    );
+    let requests = candidate.route.evidence.requests.load(Ordering::Acquire);
+    let verified = candidate.route.evidence.verified.load(Ordering::Acquire);
+    if result
+        .as_ref()
+        .is_ok_and(|run| run.outcome == TaskOutcome::Completed && (requests == 0 || verified == 0))
+    {
+        result = Err(Failure::Unsafe);
+    }
+    let reply_bytes = result.as_ref().map_or(0, |run| run.reply.len());
+    let reply_marker = result
+        .as_ref()
+        .is_ok_and(|run| run.reply.contains("CONTROLLED_"));
+    let exit = candidate.close().unwrap();
+    assert!(exit.cleaned);
+    assert!(!exit.forced);
+    if scenario == "a" || scenario == "b" {
+        assert_eq!(result.as_ref().unwrap().outcome, TaskOutcome::Completed);
+        assert!(reply_marker);
+        assert!(requests > 0 && verified > 0);
+        assert!(event_kinds.contains(&"running"));
+        assert!(event_kinds.contains(&"reply_delta"));
+        assert!(event_kinds.contains(&"completed"));
+    }
+    if scenario == "tls-untrusted" {
+        assert_eq!(verified, 0);
+        assert!(
+            !result
+                .as_ref()
+                .is_ok_and(|run| run.outcome == TaskOutcome::Completed)
+        );
+    }
+    if matches!(scenario.as_str(), "drift" | "timeout" | "cancel") {
+        assert!(result.is_err());
+    }
+    fs::remove_dir_all(&project).unwrap();
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    println!(
+        "TASK_GATEWAY_EVIDENCE:{}",
+        json!({"scenario":scenario,"requests":requests,"verifiedResponses":verified,
+            "replyBytes":reply_bytes,"replyMarker":reply_marker,"eventKinds":event_kinds,
+            "exit":exit,"errorCode":result.err().map(Failure::code)})
+    );
+}
+
+#[test]
 #[ignore = "private Job lifetime worker, invoked by its parent test"]
 fn job_fixture() {
     let Ok(role) = std::env::var("PA_JOB_FIXTURE_ROLE") else {

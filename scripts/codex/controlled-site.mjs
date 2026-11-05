@@ -21,7 +21,8 @@ export async function controlledSite(label, key, {tls} = {}) {
     const keyMatches = request.headers.authorization === `Bearer ${key}`;
     requests.push({ method: request.method, path: request.url?.split("?")[0], keyMatches,
       credentialPresent: Boolean(request.headers.authorization), model: payload.model,
-      effort: payload.reasoning?.effort });
+      effort: payload.reasoning?.effort,
+      containsTaskPrompt: JSON.stringify(payload).includes("S3_04_PROMPT_SENTINEL") });
     if (mode === "redirect") { response.writeHead(307, { location: redirect }).end(); return; }
     if (!keyMatches || mode === "unauthorized" || mode === "echo-secret-error") {
       response.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: mode === "echo-secret-error" ? key : "Synthetic authentication failure", type: "invalid_request_error" } }));

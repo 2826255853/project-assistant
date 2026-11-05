@@ -24,7 +24,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
     },
@@ -37,6 +37,14 @@ use url::Url;
 const PROVIDER: &str = "project_assistant_owned";
 pub(crate) const ADAPTER_VERSION: &str = "owned-stdio-relay-v1";
 const MAX_FRAME: u64 = 1024 * 1024;
+/// Task streams are deliberately smaller than the transport frame limit. A
+/// task can produce many frames, so the gateway applies both per-frame and
+/// cumulative limits before any event is handed to the UI layer.
+const MAX_TASK_CONTENT: usize = 2 * 1024 * 1024;
+const MAX_TASK_EVENTS: usize = 10_000;
+const MAX_TASK_EVENTS_PER_SECOND: u32 = 120;
+const MAX_TASK_PROMPT: usize = 64 * 1024;
+const TASK_RUNTIME: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Failure {
@@ -65,6 +73,53 @@ impl Failure {
             Self::TestFailed => ErrorCode::ProviderTestFailed,
         }
     }
+}
+
+/// Events emitted by the owned task gateway. These are intentionally
+/// structured values; raw protocol frames never cross this boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TaskEvent {
+    Started {
+        external_session_id: String,
+        external_turn_id: String,
+    },
+    Running,
+    ReplyDelta {
+        text: String,
+    },
+    Progress {
+        text: String,
+    },
+    ApprovalRequired {
+        external_request_id: String,
+        operation_kind: String,
+        operation_fingerprint: String,
+    },
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TaskOutcome {
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TaskRun {
+    pub external_session_id: String,
+    pub external_turn_id: String,
+    pub events: Vec<TaskEvent>,
+    pub reply: String,
+    pub progress: String,
+    pub progress_bytes: usize,
+    pub outcome: TaskOutcome,
+    pub exit: ExitEvidence,
+    pub fingerprint: String,
+    pub upstream_requests: usize,
+    pub verified_responses: usize,
 }
 
 #[derive(Clone, Default)]
@@ -101,6 +156,10 @@ fn file_hash(path: &Path) -> Result<String> {
         digest.update(&buffer[..count]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn valid_project_identity(value: &str) -> bool {
+    value.len() == 48 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Constructed by backend executable selection, never from a webview spawn
@@ -385,7 +444,7 @@ pub(crate) struct ProbeEvidence {
     pub verified_responses: usize,
     pub exit: ExitEvidence,
 }
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExitEvidence {
     pub pid: u32,
@@ -413,6 +472,26 @@ impl OwnedProcessState {
         *self.root.lock().map_err(|_| ErrorCode::ProcessExitFailed)? = Some(root);
         self.blocked.store(false, Ordering::Release);
         Ok(())
+    }
+
+    pub(crate) fn root(&self) -> std::result::Result<PathBuf, ErrorCode> {
+        self.root
+            .lock()
+            .map_err(|_| ErrorCode::ProcessExitFailed)?
+            .clone()
+            .ok_or(ErrorCode::ProviderSharedRouteUnsafe)
+    }
+
+    pub(crate) fn is_blocked(&self) -> bool {
+        self.blocked.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn block(&self) {
+        self.blocked.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn lock_serial(&self) -> std::result::Result<MutexGuard<'_, ()>, ErrorCode> {
+        self.serial.lock().map_err(|_| ErrorCode::ProcessExitFailed)
     }
 }
 
@@ -491,7 +570,7 @@ pub(crate) fn probe_candidate(
         selected,
         secret,
         None,
-        cancel,
+        cancel.clone(),
         Duration::from_secs(90),
     );
     if matches!(result, Err(Failure::Cleanup)) {
@@ -530,6 +609,93 @@ fn run_probe(
             exit,
         },
     )
+}
+
+/// Run one already-admitted task through the application-owned route. The
+/// caller supplies the immutable snapshot fields and a verified project cwd;
+/// this function never reads UI state or shared Codex configuration.
+pub(crate) fn run_task(
+    root: &Path,
+    executable: &Executable,
+    profile_id: &str,
+    config_revision: i64,
+    credential_revision: i64,
+    endpoint: &str,
+    origin: &str,
+    model: &str,
+    effort: &str,
+    secret: SecretBuffer,
+    project: &Path,
+    project_identity: &str,
+    prompt: &str,
+    cancel: Cancel,
+    mut on_event: impl FnMut(TaskEvent) -> std::result::Result<(), ErrorCode>,
+) -> std::result::Result<TaskRun, ErrorCode> {
+    if prompt.is_empty()
+        || prompt.len() > MAX_TASK_PROMPT
+        || prompt
+            .chars()
+            .any(|ch| ch.is_control() && ch != '\n' && ch != '\r' && ch != '\t')
+    {
+        return Err(ErrorCode::InvalidRequest);
+    }
+    if !valid_project_identity(project_identity)
+        || crate::project_paths::verify_task_directory_identity(project, project_identity).is_err()
+    {
+        return Err(ErrorCode::ProjectPathChanged);
+    }
+    let selection = Selection {
+        profile_id: profile_id.to_owned(),
+        config_revision,
+        credential_revision,
+        endpoint: endpoint.to_owned(),
+        origin: origin.to_owned(),
+        model: model.to_owned(),
+        effort: effort.to_owned(),
+        fixture: false,
+        #[cfg(test)]
+        fixture_ca: None,
+    };
+    let mut candidate = Candidate::start(
+        root,
+        executable,
+        selection,
+        secret,
+        Some(project),
+        cancel.clone(),
+        TASK_RUNTIME,
+    )
+    .map_err(Failure::code)?;
+    candidate.expected_project_identity = Some(project_identity.to_owned());
+    let callback_failure = std::cell::RefCell::new(None);
+    let callback_cancel = cancel.clone();
+    let mut callback = |event| match on_event(event) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            *callback_failure.borrow_mut() = Some(error);
+            callback_cancel.cancel();
+            Err(error)
+        }
+    };
+    let result = candidate.task(prompt, &mut callback);
+    let pid = candidate.child.id();
+    let exit = candidate.close().map_err(Failure::code)?;
+    if let Some(error) = callback_failure.into_inner() {
+        return Err(error);
+    }
+    let result = result.map_err(Failure::code)?;
+    if exit.forced || exit.code != Some(0) || !exit.cleaned {
+        return Err(ErrorCode::ProcessExitFailed);
+    }
+    let mut result = result;
+    result.exit.pid = pid;
+    result.exit = exit;
+    if result.outcome == TaskOutcome::Completed
+        && (result.upstream_requests == 0 || result.verified_responses == 0)
+    {
+        return Err(ErrorCode::ProviderTestFailed);
+    }
+    Ok(result)
 }
 
 /// Loopback/temporary CA exist only in a test binary, never an application env flag.
@@ -701,6 +867,7 @@ struct Candidate {
     readers: Vec<JoinHandle<()>>,
     selection: Selection,
     cwd: PathBuf,
+    expected_project_identity: Option<String>,
     config_hash: String,
     fingerprint: String,
     cancel: Cancel,
@@ -711,6 +878,74 @@ struct Candidate {
     stage: &'static str,
     active_turn: Option<(String, String)>,
 }
+
+struct TaskAccumulator {
+    events: Vec<TaskEvent>,
+    total_events: usize,
+    reply: String,
+    progress_bytes: usize,
+    progress: String,
+    window_started: Instant,
+    window_events: u32,
+}
+impl TaskAccumulator {
+    fn new() -> Self {
+        Self {
+            events: Vec::new(),
+            total_events: 0,
+            reply: String::new(),
+            progress_bytes: 0,
+            progress: String::new(),
+            window_started: Instant::now(),
+            window_events: 0,
+        }
+    }
+    fn rate(&mut self) -> Result<()> {
+        let now = Instant::now();
+        if now.duration_since(self.window_started) >= Duration::from_secs(1) {
+            self.window_started = now;
+            self.window_events = 0;
+        }
+        self.window_events = self.window_events.saturating_add(1);
+        self.total_events = self.total_events.saturating_add(1);
+        if self.window_events > MAX_TASK_EVENTS_PER_SECOND || self.total_events > MAX_TASK_EVENTS {
+            return Err(Failure::Protocol);
+        }
+        Ok(())
+    }
+    fn push(
+        &mut self,
+        event: TaskEvent,
+        on_event: &mut dyn FnMut(TaskEvent) -> std::result::Result<(), ErrorCode>,
+    ) -> Result<()> {
+        self.rate()?;
+        match &event {
+            TaskEvent::ReplyDelta { text } => {
+                if text.len() > 64 * 1024
+                    || self.reply.len().saturating_add(text.len()) > MAX_TASK_CONTENT
+                {
+                    return Err(Failure::Protocol);
+                }
+                self.reply.push_str(text);
+            }
+            TaskEvent::Progress { text } => {
+                if text.len() > 64 * 1024 {
+                    return Err(Failure::Protocol);
+                }
+                self.progress_bytes = self.progress_bytes.saturating_add(text.len());
+                if self.progress_bytes.saturating_add(self.reply.len()) > MAX_TASK_CONTENT {
+                    return Err(Failure::Protocol);
+                }
+                self.progress.push_str(text);
+            }
+            _ => {}
+        }
+        self.events.push(event.clone());
+        on_event(event).map_err(|_| Failure::Protocol)?;
+        Ok(())
+    }
+}
+
 impl Candidate {
     fn start(
         root: &Path,
@@ -788,6 +1023,7 @@ impl Candidate {
             readers: vec![output_reader, error_reader],
             selection,
             cwd,
+            expected_project_identity: None,
             config_hash,
             fingerprint,
             cancel,
@@ -808,6 +1044,10 @@ impl Candidate {
             return Err(Failure::Timeout);
         }
         verify_project(&self.cwd)?;
+        if let Some(identity) = &self.expected_project_identity {
+            crate::project_paths::verify_task_directory_identity(&self.cwd, identity)
+                .map_err(|_| Failure::Unsafe)?;
+        }
         if file_hash(&self.home.path.join("codex/config.toml"))? != self.config_hash
             || self.home.path.join("codex/auth.json").exists()
         {
@@ -965,6 +1205,248 @@ impl Candidate {
                 self.event(value)?;
             }
         }
+    }
+
+    fn task(
+        &mut self,
+        prompt: &str,
+        on_event: &mut dyn FnMut(TaskEvent) -> std::result::Result<(), ErrorCode>,
+    ) -> Result<TaskRun> {
+        self.stage = "initialize";
+        self.rpc(
+            "initialize",
+            json!({
+                "clientInfo":{"name":"project_assistant_task","version":"0.1.0"},
+                "capabilities":{"experimentalApi":false}
+            }),
+        )?;
+        self.send(json!({"method":"initialized","params":{}}))?;
+        self.stage = "config";
+        let read = self.rpc("config/read", json!({"includeLayers":true,"cwd":self.cwd}))?;
+        self.verify_effective_config(&read)?;
+        self.stage = "thread";
+        let started = self.rpc(
+            "thread/start",
+            json!({
+                "cwd":self.cwd,
+                "ephemeral":true,
+                "model":self.selection.model,
+                "modelProvider":PROVIDER,
+                "sandbox":"read-only",
+                "approvalPolicy":"on-request",
+                "config":{"model_reasoning_effort":self.selection.effort}
+            }),
+        )?;
+        if started.get("model").and_then(Value::as_str) != Some(&self.selection.model)
+            || started.get("modelProvider").and_then(Value::as_str) != Some(PROVIDER)
+            || started.get("reasoningEffort").and_then(Value::as_str)
+                != Some(&self.selection.effort)
+            || started
+                .get("cwd")
+                .and_then(Value::as_str)
+                .and_then(|v| Path::new(v).canonicalize().ok())
+                .as_ref()
+                != Some(&self.cwd)
+        {
+            return Err(Failure::Unsafe);
+        }
+        let thread_id = started
+            .pointer("/thread/id")
+            .and_then(Value::as_str)
+            .ok_or(Failure::Protocol)?
+            .to_owned();
+        let mut acc = TaskAccumulator::new();
+        acc.push(TaskEvent::Running, on_event)?;
+        self.stage = "turn";
+        let turn = self.rpc(
+            "turn/start",
+            json!({
+                "threadId":thread_id,
+                "model":self.selection.model,
+                "effort":self.selection.effort,
+                "input":[{"type":"text","text":prompt,"text_elements":[]}]
+            }),
+        )?;
+        let turn_id = turn
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .ok_or(Failure::Protocol)?
+            .to_owned();
+        self.active_turn = Some((thread_id.clone(), turn_id.clone()));
+        acc.push(
+            TaskEvent::Started {
+                external_session_id: thread_id.clone(),
+                external_turn_id: turn_id.clone(),
+            },
+            on_event,
+        )?;
+        loop {
+            let value = if let Some(index) = self.terminal.iter().position(|event| {
+                event.pointer("/params/threadId").and_then(Value::as_str) == Some(&thread_id)
+                    && event.pointer("/params/turn/id").and_then(Value::as_str) == Some(&turn_id)
+            }) {
+                self.terminal.remove(index).ok_or(Failure::Protocol)?
+            } else {
+                self.receive()?
+            };
+            if value.get("method").is_none() {
+                return Err(Failure::Protocol);
+            }
+            if let Some(outcome) =
+                self.task_event(value, &thread_id, &turn_id, &mut acc, on_event)?
+            {
+                self.active_turn = None;
+                return Ok(TaskRun {
+                    external_session_id: thread_id,
+                    external_turn_id: turn_id,
+                    events: acc.events,
+                    reply: acc.reply,
+                    progress_bytes: acc.progress_bytes,
+                    progress: acc.progress,
+                    outcome,
+                    exit: ExitEvidence {
+                        pid: 0,
+                        code: None,
+                        forced: false,
+                        cleaned: false,
+                    },
+                    fingerprint: self.fingerprint.clone(),
+                    upstream_requests: self.route.evidence.requests.load(Ordering::Acquire),
+                    verified_responses: self.route.evidence.verified.load(Ordering::Acquire),
+                });
+            }
+        }
+    }
+
+    fn task_event(
+        &mut self,
+        message: Value,
+        thread_id: &str,
+        turn_id: &str,
+        acc: &mut TaskAccumulator,
+        on_event: &mut dyn FnMut(TaskEvent) -> std::result::Result<(), ErrorCode>,
+    ) -> Result<Option<TaskOutcome>> {
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .ok_or(Failure::Protocol)?;
+        let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+        if method.ends_with("/requestApproval") {
+            let id = message.get("id").cloned().ok_or(Failure::Protocol)?;
+            let _item_id = params
+                .get("itemId")
+                .and_then(Value::as_str)
+                .filter(|v| {
+                    !v.is_empty() && v.len() <= 96 && v.bytes().all(|b| b.is_ascii_graphic())
+                })
+                .ok_or(Failure::Protocol)?;
+            let operation_kind = if method.starts_with("item/commandExecution/") {
+                "command"
+            } else if method.starts_with("item/fileChange/") {
+                "file_change"
+            } else {
+                "unknown"
+            };
+            let request_bytes = serde_json::to_vec(&params).map_err(|_| Failure::Protocol)?;
+            if request_bytes.len() > MAX_FRAME as usize {
+                return Err(Failure::Protocol);
+            }
+            let mut digest = Sha256::new();
+            digest.update(method.as_bytes());
+            digest.update([0]);
+            digest.update(request_bytes);
+            let fingerprint = format!("{:x}", digest.finalize());
+            acc.push(
+                TaskEvent::ApprovalRequired {
+                    external_request_id: match &id {
+                        Value::String(value) => value.clone(),
+                        Value::Number(value) => value.to_string(),
+                        _ => return Err(Failure::Protocol),
+                    },
+                    operation_kind: operation_kind.to_owned(),
+                    operation_fingerprint: fingerprint,
+                },
+                on_event,
+            )?;
+            // Approval decisions are owned by the later approval service. The
+            // gateway declines here so a task can never execute a high-risk
+            // request merely because no decision channel is attached yet.
+            self.send(json!({"id":id,"result":{"decision":"decline"}}))?;
+            return Ok(None);
+        }
+        if let Some(actual_thread) = params.get("threadId").and_then(Value::as_str) {
+            if actual_thread != thread_id {
+                return Err(Failure::Protocol);
+            }
+        }
+        if let Some(actual_turn) = params.get("turnId").and_then(Value::as_str) {
+            if actual_turn != turn_id {
+                return Err(Failure::Protocol);
+            }
+        }
+        if let Some(actual_turn) = params.pointer("/turn/id").and_then(Value::as_str) {
+            if actual_turn != turn_id {
+                return Err(Failure::Protocol);
+            }
+        }
+        match method {
+            "turn/started" => acc.push(TaskEvent::Running, on_event)?,
+            "item/agentMessage/delta" => {
+                let text = params
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .ok_or(Failure::Protocol)?;
+                acc.push(
+                    TaskEvent::ReplyDelta {
+                        text: text.to_owned(),
+                    },
+                    on_event,
+                )?;
+            }
+            "item/commandExecution/outputDelta"
+            | "item/fileChange/outputDelta"
+            | "item/commandExecution/started"
+            | "item/fileChange/started" => {
+                let text = params
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                acc.push(TaskEvent::Progress { text }, on_event)?;
+            }
+            "turn/completed" => {
+                let status = params
+                    .pointer("/turn/status")
+                    .and_then(Value::as_str)
+                    .ok_or(Failure::Protocol)?;
+                return match status {
+                    "completed" => {
+                        acc.push(TaskEvent::Completed, on_event)?;
+                        Ok(Some(TaskOutcome::Completed))
+                    }
+                    "interrupted" | "cancelled" => {
+                        acc.push(TaskEvent::Cancelled, on_event)?;
+                        Ok(Some(TaskOutcome::Cancelled))
+                    }
+                    "failed" => {
+                        acc.push(TaskEvent::Failed, on_event)?;
+                        Ok(Some(TaskOutcome::Failed))
+                    }
+                    _ => Err(Failure::Protocol),
+                };
+            }
+            "error" => {
+                acc.push(TaskEvent::Failed, on_event)?;
+                return Ok(Some(TaskOutcome::Failed));
+            }
+            _ => {
+                // Unknown notifications carry no executable authority. Ignore
+                // them after applying the event-rate bound; the next state is
+                // still determined by a known terminal event or timeout.
+                acc.rate()?;
+            }
+        }
+        Ok(None)
     }
     fn verify_effective_config(&mut self, value: &Value) -> Result<()> {
         self.stage = "config-selection";

@@ -13,17 +13,27 @@ const taskCommands = [
   "overlay_task_cancel", "overlay_task_find_by_request",
 ];
 
-test("task IPC commands stay unregistered until their service and authorization gates ship", async () => {
+test("S3-04 exposes only main-window session/task gateway commands", async () => {
   const [contracts, taskContracts, client, rust, manifest, main, overlay] = await Promise.all([
     read("../../src/ipc/contracts.ts"), read("../../src/ipc/taskContracts.ts"),
     read("../../src/ipc/client.ts"), read("../../src-tauri/src/lib.rs"),
     read("../../src-tauri/build.rs"), read("../../src-tauri/capabilities/default.json").then(JSON.parse),
     read("../../src-tauri/capabilities/overlay.json").then(JSON.parse),
   ]);
-  assert.ok(contracts.includes('Extract<keyof ImplementedCommandMap, keyof TaskCommandMap> extends never ? true : false'));
+  assert.ok(contracts.includes('Extract<keyof ImplementedCommandMap, "task_content_get"'));
   const declared = [...taskContracts.split("export interface TaskCommandMap {")[1].matchAll(/^  ([a-z_]+):/gm)].map(match => match[1]);
   assert.deepEqual(declared.sort(), [...taskCommands].sort(), "every future task command must be checked");
-  for (const name of taskCommands) {
+  const implementedCommands = ["session_create", "session_find_by_request", "sessions_list", "session_get", "session_resume", "session_end",
+    "task_start", "task_find_by_request", "tasks_list", "task_get", "task_cancel", "task_events_get", "approvals_get"];
+  for (const name of implementedCommands) {
+    assert.ok(contracts.match(/export interface ImplementedCommandMap \{([\s\S]*?)^\}/m)?.[1].includes(name), `${name} must be in the callable map`);
+    assert.match(client, new RegExp(`\\b${name}:`), `${name} must have a runtime validator`);
+    assert.match(rust, new RegExp(`#\\[tauri::command\\]\\s*(?:async\\s+)?fn\\s+${name}\\s*\\(`));
+    assert.ok(manifest.includes(`"${name}"`));
+    assert.ok(main.permissions.includes(`allow-${name.replaceAll("_", "-")}`));
+    assert.ok(!overlay.permissions.includes(`allow-${name.replaceAll("_", "-")}`));
+  }
+  for (const name of taskCommands.filter(name => !implementedCommands.includes(name))) {
     assert.match(taskContracts, new RegExp(`\\b${name}:`));
     assert.ok(!contracts.match(/export interface ImplementedCommandMap \{([\s\S]*?)^\}/m)?.[1].includes(name), `${name} must stay unimplemented`);
     assert.ok(!client.includes(`"${name}"`), `${name} must not have an invocation path`);

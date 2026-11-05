@@ -48,6 +48,25 @@ pub fn revalidate_registered_directory(
     windows::revalidate_registered_directory(canonical_path, expected_identity)
 }
 
+/// Revalidates a task's live project root against the opaque identity retained
+/// by its admission proof. The identity never crosses IPC or log boundaries.
+pub fn verify_task_directory_identity(
+    canonical_path: &std::path::Path,
+    identity: &str,
+) -> Result<(), ErrorCode> {
+    #[cfg(windows)]
+    {
+        let expected =
+            DirectoryIdentity::from_storage_value(identity).ok_or(ErrorCode::ProjectPathChanged)?;
+        windows::revalidate_registered_directory(canonical_path, expected).map(|_| ())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (canonical_path, identity);
+        Err(ErrorCode::ProjectPathUnavailable)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

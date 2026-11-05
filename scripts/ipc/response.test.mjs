@@ -57,7 +57,7 @@ test("IPC permissions are limited to the local main window and explicit commands
     assert.ok(capability.permissions.includes("allow-app-get-status"));
     assert.ok(capability.permissions.includes("core:event:allow-listen"));
     assert.ok(capability.permissions.includes("core:event:allow-unlisten"));
-    assert.ok(!capability.permissions.some(p => /core:default|event:default|allow-emit|allow-ipc-fixture|task-start|approval/.test(p)));
+    assert.ok(!capability.permissions.some(p => /core:default|event:default|allow-emit|allow-ipc-fixture|approval-decide/.test(p)));
     if (capability===overlay) assert.ok(!capability.permissions.some(p=>/provider|operation/.test(p)));
     assert.equal(capability.remote, undefined);
   }

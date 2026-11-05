@@ -2139,14 +2139,14 @@ AI 配置补充任务应随上述清单推进：在通信验证时确认自有�
 
 每项命令须同步 TypeScript/Rust DTO、运行时返回校验、`ImplementedCommandMap`、Rust 注册、窗口 capability、固定错误、审计与白名单日志；只对真实使用窗口开放。继续遵循 `{request:{apiVersion:1,params}}` 与服务端 correlationId envelope。事件频道沿用 `project-assistant://event/v1` 的 streamId/sequence 无载荷状态失效通知；敏感任务内容通过授权、限长的任务读取接口获取。超时/停止等待不代表服务端取消，任务启动、审批决定和其他变更请求不得自动重发。
 
-**跟踪表（2026-11-03 更新）**：
+**跟踪表（2026-11-05 更新）**：
 
 | 步骤 / 任务 ID | 当前状态 | 实施完成后的主要产物 | 证据 / 主要待关闭问题 |
 | --- | --- | --- | --- |
 | 3.1 / S3-01 | 通过（契约与未开放断言范围，2026-11-02） | `src/ipc/taskContracts.ts`、FR-CX/M3 映射、状态/失败/权限契约；`docs/phase-3/step-3.1.md` | `npm run build`、`npm run test:ipc` 36/36；任务命令仍未加入调用器/Rust 注册/capability；运行时、迁移和 M3 未验收 |
 | 3.2 / S3-02 | 通过（项目 AI 默认编辑、持久化和来源解析，2026-11-03） | `project_settings_update`、schema v6 项目修订/审计事务、项目详情 AI 默认编辑器；`docs/phase-3/step-3.2.md` | built/dev 桌面与项目/全局修订冲突、失效配置、授权和失败回滚通过；真实任务/启动时重验仍待 3.3/3.4 |
 | 3.3 / S3-03 | 有条件通过（仓储、迁移、恢复范围，2026-11-04） | 会话/任务/审批仓储、v7 追加迁移、原子快照、启动恢复；`docs/phase-3/step-3.3.md` | Rust/IPC/独立进程回归通过；真实任务网关、审批消费、任务桌面闭环待 3.4–3.9 |
-| 3.4 / S3-04 | 待开始 | 自有任务网关、事件归一及清理；`docs/phase-3/step-3.4.md` | 实际 CLI/合成 HTTPS、隔离与并发 |
+| 3.4 / S3-04 | 通过（网关实现及真实 CLI/双合成 HTTPS 自动验收，2026-11-05） | 自有任务网关、事件归一、输出/速率边界、任务 worker、取消与退出清理；`docs/phase-3/step-3.4.md` | 176 Rust 单测、37 IPC、built 构建及 9 项真实 CLI/双合成 HTTPS 检查通过；审批最终决定、运行中配置切换和桌面闭环留 3.5–3.9；M3 未通过 |
 | 3.5 / S3-05 | 待开始 | 单次审批消费、取消状态机；`docs/phase-3/step-3.5.md` | 过期/重放/审计失败与终态 |
 | 3.6 / S3-06 | 待开始 | 主窗口任务、会话、回复与差异视图；`docs/phase-3/step-3.6.md` | built/dev 权威状态与越界路径 |
 | 3.7 / S3-07 | 待开始 | overlay 提交、反馈和最小权限；`docs/phase-3/step-3.7.md` | 上下文继承、IME、重建和人工待验 |
