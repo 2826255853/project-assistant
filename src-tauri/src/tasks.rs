@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::Manager;
+pub(crate) mod results;
 
 #[derive(Default)]
 pub(crate) struct TaskRuntimeState {
@@ -43,6 +44,7 @@ struct ApprovalWaiter {
 struct TaskOutput {
     reply: String,
     progress: String,
+    changes: Vec<results::StoredChange>,
 }
 
 impl TaskRuntimeState {
@@ -149,6 +151,8 @@ impl TaskRuntimeState {
                     cancel,
                 );
                 if let Err(error) = &result {
+                    #[cfg(test)]
+                    eprintln!("TASK_WORKER_FAILURE:{error:?}");
                     finish_task_failure(
                         &app,
                         &worker_task_id,
@@ -169,17 +173,6 @@ impl TaskRuntimeState {
                 }
                 if let Ok(mut waiters) = app.state::<TaskRuntimeState>().approval_waiters.lock() {
                     waiters.retain(|_, waiter| waiter.task_id != worker_task_id);
-                }
-                if let Ok(run) = &result {
-                    if let Ok(mut outputs) = app.state::<TaskRuntimeState>().outputs.lock() {
-                        outputs.insert(
-                            worker_task_id.clone(),
-                            TaskOutput {
-                                reply: run.reply.clone(),
-                                progress: run.progress.clone(),
-                            },
-                        );
-                    }
                 }
                 if let Ok(mut completed) = app.state::<TaskRuntimeState>().completed.lock() {
                     completed.push_back(worker_task_id.clone());
@@ -1139,6 +1132,10 @@ pub(crate) fn run_admitted(
                 app_state::publish(app, correlation.to_owned());
             }
             crate::owned_process::TaskEvent::OperationCompleted { .. } => {}
+            crate::owned_process::TaskEvent::FileChanges { changes } => {
+                results::capture(app, task_id, changes)?;
+                app_state::publish(app, correlation.to_owned());
+            }
             crate::owned_process::TaskEvent::ApprovalAbandoned { approval_id, consume_request_id } => {
                 app.state::<StorageState>().with_storage(|storage| Ok(storage.tasks().approval_acknowledge(
                     &approval_id, &consume_request_id, false, correlation,

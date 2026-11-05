@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "allow-projects-add-from-picker",
     "allow-project-get",
@@ -51,6 +53,9 @@
     "allow-desktop-initialize",
     "allow-overlay-get",
     "allow-overlay-control",
-    "core:window:allow-close"
+    "core:window:allow-close",
+    "allow-task-content-get",
+    "allow-task-changes-get",
+    "allow-task-change-get"
   ]
 }

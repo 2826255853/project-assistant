@@ -147,6 +147,30 @@ export function isApprovalPage(value: unknown): value is { items: ApprovalView[]
 export function isApprovalReceipt(value: unknown): value is ApprovalReceipt {
   return record(value) && exact(value, ["approval", "duplicate"]) && isApprovalView(value.approval) && typeof value.duplicate === "boolean";
 }
+export function isTaskContent(value: unknown): value is TaskContent {
+  return record(value) && exact(value, ["taskId", "contentRevision", "channel", "text", "nextCursor", "truncated", "availability"]) && uuid(value.taskId) &&
+    time(value.contentRevision) && ["reply", "progress"].includes(String(value.channel)) && bounded(value.text, 32768) &&
+    (value.nextCursor === null || bounded(value.nextCursor, 512)) && typeof value.truncated === "boolean" &&
+    ["memory", "unavailable"].includes(String(value.availability)) && (value.availability !== "unavailable" || (value.text === "" && value.nextCursor === null));
+}
+export function isTaskRelativePath(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && bounded(value, 4096) &&
+    !/[<>"|?*\\:\u007f]/.test(value) && value.split("/").every(part => part.length > 0 && part !== "." && part !== ".." &&
+      !/[. ]$/.test(part) && !/^(con|conin\$|conout\$|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part));
+}
+export function isTaskChangePage(value: unknown): value is TaskChangePage {
+  return record(value) && exact(value, ["taskId", "items", "nextCursor", "contentAvailable"]) && uuid(value.taskId) &&
+    Array.isArray(value.items) && value.items.length <= 100 && value.items.every(item => record(item) &&
+      exact(item, ["id", "kind", "relativePath", "diffAvailable"]) && uuid(item.id) && ["added", "modified", "deleted"].includes(String(item.kind)) &&
+      isTaskRelativePath(item.relativePath) && typeof item.diffAvailable === "boolean") &&
+    new Set(value.items.map(item => item.id)).size === value.items.length &&
+    (value.nextCursor === null || bounded(value.nextCursor, 512)) && typeof value.contentAvailable === "boolean";
+}
+export function isTaskDiff(value: unknown): value is TaskDiff {
+  return record(value) && exact(value, ["taskId", "changeId", "text", "unavailableReason"]) && uuid(value.taskId) && uuid(value.changeId) &&
+    (value.text === null ? ["expired", "binary", "too_large", "unsafe_path"].includes(String(value.unavailableReason)) :
+      bounded(value.text, 65536) && value.unavailableReason === null);
+}
 export interface TaskCommandMap {
   active_context_set: { params: { projectId: string; sessionId: string; selection: AiSelection; expectedContextRevision: number }; data: ActiveTaskContext };
   session_create: { params: { projectId: string; expectedProjectRevision: number; clientRequestId: string }; data: SessionReceipt };
@@ -173,5 +197,4 @@ export interface TaskCommandMap {
   overlay_task_cancel: { params: { expectedContextRevision: number; expectedTaskRevision: number }; data: CancelReceipt };
 }
 
-// S3-05 adds main-window approval decisions. Content bodies and overlay commands
-// remain closed until their corresponding implementation steps.
+// S3-06 opens bounded result reads to main. Overlay commands remain closed.

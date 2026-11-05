@@ -24,6 +24,8 @@
 
 优先阅读 `README.md`、`计划文档.txt` 第 21/22 节、`docs/phase-2/step-2.5.md`、`docs/phase-2/step-2.4.md`、`docs/phase-2/step-2.3.md`、`docs/phase-2/step-2.1.md`、`docs/phase-1/step-1.7.md` 和 `step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
 
+步骤 3.6（S3-06）于 2026-11-06 通过主窗口会话/任务、受限回复/差异和自动验收范围：新增任务页，支持项目/会话、配置确认、提交、单次审批、取消、历史和权威状态恢复；main-only `task_content_get/task_changes_get/task_change_get` 已接入，差异绑定任务、项目修订和文件/父目录身份。修正 EventData 字段 camelCase，适配器升为 `owned-stdio-relay-v3`，旧能力/连接证据需重新核验。`verify:task-ui` 为 190 Rust、40 IPC、15 离线及 built/dev 各 12 项真实 WebView 检查；网关、审批、隔离路由子集及普通应用构建/built shell 回归通过。正文仅进程内缓存，schema 仍为 v7；补丁批准仍受限，差异/缺口/逐出/审计及恢复注入与真实 CLI 任务证据分列。已结束会话不可恢复，只有 interrupted 显式恢复；overlay、并发整合、阶段回归仍在 3.7–3.9，M3 未整体通过。详见 `docs/phase-3/step-3.6.md` 和 `artifacts/phase-3-6/report.json`。
+
 ## 已确认的产品约定
 
 - cc-switch 由用户在应用外手动管理。生产应用不自动读取、导入、同步或切换其 profile/Key，不依赖安装/版本，不修改用户共享 Codex 配置。依据 `docs/phase-0/self-managed-profile-adr.md`（ADR-0011）。旧调查脚本仅是历史实验，不能作为生产适配器复用。
@@ -41,7 +43,7 @@
 - `src/ipc/contracts.ts`：DTO；`client.ts`：集中调用入口；`response.ts`、`settings.ts`、`state.ts`：运行时返回校验和状态恢复；`transport.ts`：超时/停止等待。`CommandMap` 含未来接口，**实际可调用范围看 `ImplementedCommandMap` 和 Rust 注册表**。
 - `src/ipc/projects.ts`、`src-tauri/src/project_contract.rs`：项目 DTO 与校验；2.3 登记/详情/移除、2.4 列表搜索和 2.5 目录/文件打开/文件选择已接入 client、Rust 注册和 main capability，完整项目服务状态仍待后续。`src/ipc/projectSearch.ts` 为分页/响应代次/IME 控制器，`storage/projects/search.rs` 为元数据搜索、稳定排序和指纹游标。`src-tauri/src/project_paths.rs` 与 `project_paths/windows.rs`：2.2 Windows 选择器、路径核验与身份句柄；`project_paths/windows/delivery.rs`：2.5 名称句柄与只回滚 NTFS 元数据保护、默认程序/编辑器交付与受限文件结果；`storage/projects.rs` 为持久仓储/使用事务及启动复核，`projects.rs` 为服务入口。
 - `src-tauri/src/lib.rs`：命令封装、启动顺序、状态注入、窗口生命周期和命令注册；`desktop.rs`：初始化模式；`app_state.rs`：权威状态与事件游标。
-- `src-tauri/src/tasks.rs`、`storage/tasks.rs`：会话/任务仓储、原子准入、运行 worker、审批等待/决定/消费确认与取消；`src/ipc/taskContracts.ts` 为 DTO/返回校验。`approval_decide` 仅 main，内容/差异正文和 overlay 任务命令仍保持关闭。
+- `src-tauri/src/tasks.rs`、`storage/tasks.rs`：会话/任务仓储、原子准入、运行 worker、审批等待/决定/消费确认与取消；`tasks/results.rs` 为 main-only 有界内容、文件身份与差异缓存读取；`src/ipc/taskContracts.ts` 为 DTO/返回校验，`src/pages/TasksPage.tsx` 为主窗口视图。`approval_decide` 和内容/差异读取仅 main，overlay 任务命令仍关闭。
 - `src-tauri/src/settings.rs`：设置 DTO、校验、运行状态应用/回滚和统一更新；`overlay.rs`：托盘、快捷键、位置、显示器校正与窗口操作。
 - `src-tauri/src/storage/mod.rs`：连接保护、迁移/备份、启动恢复及 StorageState；`repositories.rs`：类型化仓储；`storage/settings.rs`：设置事务、修订与旧 JSON 一次迁移。
 - `src-tauri/src/owned_process/`：1.7 正式自有候选进程、配置/来源核验、固定上游转发、当前用户 DACL、Windows Job 与自有 home 清理；Rust 内部 `probe_candidate` 留给 1.8 使用，未新增业务 IPC。`verify:isolation` 为实际 CLI/合成 HTTPS 验收；生产不允许用环境变量开启 loopback/自签 CA。
@@ -61,6 +63,8 @@
 - 开发与验收只声明实际验证范围。历史报告、合成测试、当前实现与人工待验应分别说明；不要把阶段 0 实验通过写成生产能力通过。
 
 ## 环境与验证入口
+
+Git 推送约定：先按常规方式推送；若推送因网络连接或代理问题失败，则尝试通过本机 `127.0.0.1:7897` 代理端口再次推送。HTTPS 远程可使用 `git -c http.proxy=http://127.0.0.1:7897 push`，并保留原推送的远程、分支等参数；代理仅对本次命令生效，不修改全局 Git 配置。认证、权限或非快进等失败应按实际原因处理。
 
 仓库固定基线：Node.js 24.18.0（`.node-version`）、npm 11.16.0、Rust 1.99.0 / `x86_64-pc-windows-msvc`（`rust-toolchain.toml`）。Windows 还需 MSVC/C++ 工作负载、Windows SDK 与 WebView2。这是项目既定版本，不代表重装后已安装或已重新核验。
 
@@ -84,6 +88,7 @@ npm run verify:isolation
 npm run verify:providers
 npm run verify:task-gateway
 npm run verify:approvals
+npm run verify:task-ui
 ```
 
 `npm run dev` 只运行浏览器前端，没有真实 Tauri IPC；开发端口固定 1420。完整桌面验证支持 dev/built 两种资源模式，会启动真实窗口；执行前按 README 释放相关端口/窗口。`test:codex` 为离线测试；`verify:codex` 会调用真实服务并产生模型用量，不是普通离线回归。

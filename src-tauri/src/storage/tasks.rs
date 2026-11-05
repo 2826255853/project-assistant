@@ -142,7 +142,11 @@ pub struct EventRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum EventData {
     Status {
         status: String,
@@ -544,6 +548,27 @@ impl<'a> TaskRepository<'a> {
 
     pub(crate) fn task_get_internal(&mut self, id: &str) -> Result<TaskRecord, ErrorCode> {
         task_get(self.connection, id)?.ok_or(ErrorCode::TaskNotFound)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn task_result_directory(
+        &mut self,
+        id: &str,
+    ) -> Result<crate::project_paths::VerifiedDirectory, ErrorCode> {
+        let task = self.task_get(id)?;
+        let (revision, verified) = authorized_project(self.connection, &task.project_id)?;
+        let admitted: i64 = self
+            .connection
+            .query_row(
+                "SELECT project_revision FROM tasks WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if revision != admitted as u64 {
+            return Err(ErrorCode::ProjectConflictRevision);
+        }
+        Ok(verified)
     }
 
     pub(crate) fn task_launch(&mut self, id: &str) -> Result<TaskLaunchRecord, ErrorCode> {

@@ -33,6 +33,54 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn task_diff_locators_reject_escape_replacement_and_recreated_deleted_files() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let f = Fixture::new();
+    let verified = authorize_selected_directory(&f.project()).unwrap();
+    let relative = "nested/文本 & ().txt";
+    let first = task_change_identity(&verified, relative, false).unwrap();
+    for path in [
+        "../outside",
+        "nested/../../outside",
+        "C:/outside",
+        "nested/file:stream",
+        "nested/CON",
+    ] {
+        assert!(task_change_identity(&verified, path, false).is_err());
+    }
+    fs::rename(
+        f.project().join(relative),
+        f.project().join("nested/original.txt"),
+    )
+    .unwrap();
+    fs::write(f.project().join(relative), "replacement").unwrap();
+    assert_ne!(
+        task_change_identity(&verified, relative, false).unwrap(),
+        first
+    );
+    fs::remove_file(f.project().join(relative)).unwrap();
+    let missing = task_change_identity(&verified, relative, true).unwrap();
+    assert!(missing.starts_with("deleted:"));
+    fs::write(f.project().join(relative), "recreated").unwrap();
+    assert!(task_change_identity(&verified, relative, true).is_err());
+    let outside = f.0.join("outside");
+    fs::create_dir(&outside).unwrap();
+    let junction = f.project().join("escape");
+    let result = Command::new("cmd.exe")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&outside)
+        .creation_flags(0x08000000)
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+    assert!(task_change_identity(&verified, "escape/absent.txt", true).is_err());
+    fs::remove_dir(junction).unwrap();
+}
+
+#[test]
 fn strong_pins_block_root_ancestor_leaf_rename_delete_and_write_until_acceptance() {
     let _serial = SERIAL
         .lock()

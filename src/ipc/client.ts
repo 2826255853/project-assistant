@@ -11,7 +11,7 @@ import { isLogStatus } from "./logging";
 import { isCredentialMutation } from "./credentials";
 import { isProviderList, isProviderProfile, isModels, isReceipt, isOperation, isRemoved, isAccepted } from "./providers";
 import { errorForCode } from "./errors";
-import { isSessionView, isSessionReceipt, isSessionPage, isTaskView, isTaskReceipt, isTaskPage, isCancelReceipt, isTaskEventPage, isApprovalPage, isApprovalReceipt } from "./taskContracts";
+import { isSessionView, isSessionReceipt, isSessionPage, isTaskView, isTaskReceipt, isTaskPage, isCancelReceipt, isTaskEventPage, isApprovalPage, isApprovalReceipt, isTaskContent, isTaskChangePage, isTaskDiff } from "./taskContracts";
 import { isProjectView, isProjectPickerResult, isRemovedProject, isProjectListPage, isProjectOpenAccepted, isProjectFilePickerResult, isGitSummary, isSelectedProject, isProjectSettingsView } from "./projects";
 import { ProjectSearchController } from "./projectSearch";
 import type { ProjectSearchState } from "./projectSearch";
@@ -38,6 +38,7 @@ const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMa
   task_start: isTaskReceipt, task_find_by_request: value => value === null || isTaskView(value), tasks_list: isTaskPage,
   task_get: isTaskView, task_cancel: isCancelReceipt, task_events_get: isTaskEventPage,
   approvals_get: isApprovalPage, approval_decide: isApprovalReceipt,
+  task_content_get: isTaskContent, task_changes_get: isTaskChangePage, task_change_get: isTaskDiff,
 };
 export function call(command: "settings_get", params: { scope: "global" }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SettingsView>;
 export function call(command: "settings_get", params: { scope: "project"; projectId: string }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ProjectSettingsView>;

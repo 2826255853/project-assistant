@@ -35,7 +35,7 @@ use tauri::Manager;
 use url::Url;
 
 const PROVIDER: &str = "project_assistant_owned";
-pub(crate) const ADAPTER_VERSION: &str = "owned-stdio-relay-v2";
+pub(crate) const ADAPTER_VERSION: &str = "owned-stdio-relay-v3";
 const MAX_FRAME: u64 = 1024 * 1024;
 /// Task streams are deliberately smaller than the transport frame limit. A
 /// task can produce many frames, so the gateway applies both per-frame and
@@ -90,6 +90,9 @@ pub(crate) enum TaskEvent {
     Progress {
         text: String,
     },
+    FileChanges {
+        changes: Vec<FileChange>,
+    },
     ApprovalRequired {
         item_id: String,
         external_request_id: String,
@@ -113,6 +116,13 @@ pub(crate) enum TaskEvent {
     Completed,
     Cancelled,
     Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileChange {
+    pub relative_path: String,
+    pub kind: String,
+    pub diff: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,8 +236,67 @@ fn file_hash(path: &Path) -> Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
+// No normal debug/release application can enable test route trust.
+fn acceptance_selection(selection: Selection) -> Result<Selection> {
+    #[cfg(test)]
+    {
+        let mut selection = selection;
+        if std::env::var("PA_IPC_VERIFY").as_deref() == Ok("1")
+            && std::env::var("PA_TASK_DESKTOP_FIXTURE_ENDPOINT")
+                .ok()
+                .as_deref()
+                == Some(selection.endpoint.as_str())
+        {
+            let url = Url::parse(&selection.endpoint).map_err(|_| Failure::Unsafe)?;
+            if url.scheme() != "https" || url.host_str() != Some("127.0.0.1") {
+                return Err(Failure::Unsafe);
+            }
+            selection.fixture = true;
+            selection.fixture_ca = Some(
+                fs::read(std::env::var_os("PA_TASK_DESKTOP_CA").ok_or(Failure::Unsafe)?)
+                    .map_err(|_| Failure::Unsafe)?,
+            );
+        }
+        Ok(selection)
+    }
+    #[cfg(not(test))]
+    {
+        Ok(selection)
+    }
+}
+
 fn valid_project_identity(value: &str) -> bool {
     value.len() == 48 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn relative_change_path(cwd: &Path, value: &str) -> Result<String> {
+    let normalized = value.replace('\\', "/");
+    let root = cwd
+        .to_str()
+        .ok_or(Failure::Unsafe)?
+        .trim_start_matches(r"\\?\")
+        .replace('\\', "/");
+    let relative = if normalized.as_bytes().get(1) == Some(&b':') {
+        let prefix = format!("{}/", root.trim_end_matches('/'));
+        if !normalized
+            .to_lowercase()
+            .starts_with(&prefix.to_lowercase())
+        {
+            return Err(Failure::Unsafe);
+        }
+        normalized
+            .get(prefix.len()..)
+            .ok_or(Failure::Unsafe)?
+            .to_owned()
+    } else {
+        normalized
+    };
+    if relative.len() > crate::project_contract::MAX_RELATIVE_PATH_BYTES
+        || !crate::project_contract::valid_relative_path(&relative)
+    {
+        return Err(Failure::Unsafe);
+    }
+    Ok(relative)
 }
 
 /// Constructed by backend executable selection, never from a webview spawn
@@ -684,6 +753,7 @@ fn run_probe(
     timeout: Duration,
 ) -> Result<ProbeEvidence> {
     cancel.check()?;
+    let selection = acceptance_selection(selection)?;
     selection.validate_endpoint()?;
     if let Some(project) = project {
         verify_project(project)?;
@@ -772,6 +842,14 @@ pub(crate) fn run_task(
         }
     };
     let result = candidate.task(prompt, &mut callback);
+    #[cfg(test)]
+    if let Err(failure) = &result {
+        eprintln!(
+            "TASK_GATEWAY_FAILURE:{}:{:?}",
+            candidate.stage,
+            failure.code()
+        );
+    }
     let pid = candidate.child.id();
     let exit = candidate.close().map_err(Failure::code)?;
     if let Some(error) = callback_failure.into_inner() {
@@ -1020,6 +1098,13 @@ impl TaskAccumulator {
     ) -> Result<Option<ApprovalReply>> {
         self.rate()?;
         match &event {
+            TaskEvent::ReplyDelta { text } | TaskEvent::Progress { text }
+                if text
+                    .chars()
+                    .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) =>
+            {
+                return Err(Failure::Protocol);
+            }
             TaskEvent::ReplyDelta { text } => {
                 if text.len() > 64 * 1024
                     || self.reply.len().saturating_add(text.len()) > MAX_TASK_CONTENT
@@ -1055,6 +1140,7 @@ impl Candidate {
         cancel: Cancel,
         timeout: Duration,
     ) -> Result<Self> {
+        let selection = acceptance_selection(selection)?;
         executable.verify()?;
         let home = home::Home::create(root)?;
         let cwd = verify_project(project.unwrap_or(&home.path.join("project")))?;
@@ -1647,6 +1733,59 @@ impl Candidate {
             }
         }
         match method {
+            "item/completed"
+                if params.pointer("/item/type").and_then(Value::as_str) == Some("fileChange") =>
+            {
+                if params.get("threadId").and_then(Value::as_str) != Some(thread_id)
+                    || params.get("turnId").and_then(Value::as_str) != Some(turn_id)
+                    || params.pointer("/item/status").and_then(Value::as_str) != Some("completed")
+                {
+                    return Err(Failure::Protocol);
+                }
+                let items = params
+                    .pointer("/item/changes")
+                    .and_then(Value::as_array)
+                    .ok_or(Failure::Protocol)?;
+                if items.len() > 100 {
+                    return Err(Failure::Protocol);
+                }
+                let mut changes = Vec::new();
+                for item in items {
+                    let path = item
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .ok_or(Failure::Protocol)?;
+                    let relative = relative_change_path(&self.cwd, path)?;
+                    let kind = match item.pointer("/kind/type").and_then(Value::as_str) {
+                        Some("add") => "added",
+                        Some("delete") => "deleted",
+                        Some("update")
+                            if item.pointer("/kind/move_path").is_none_or(Value::is_null) =>
+                        {
+                            "modified"
+                        }
+                        _ => return Err(Failure::Unsafe),
+                    };
+                    let diff = item
+                        .get("diff")
+                        .and_then(Value::as_str)
+                        .ok_or(Failure::Protocol)?;
+                    if diff.contains(&self.route.token)
+                        || diff.len() > 64 * 1024
+                        || diff
+                            .chars()
+                            .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+                    {
+                        return Err(Failure::Unsafe);
+                    }
+                    changes.push(FileChange {
+                        relative_path: relative,
+                        kind: kind.into(),
+                        diff: diff.into(),
+                    });
+                }
+                acc.push(TaskEvent::FileChanges { changes }, on_event)?;
+            }
             "item/completed"
                 if params.pointer("/item/type").and_then(Value::as_str)
                     == Some("commandExecution") =>

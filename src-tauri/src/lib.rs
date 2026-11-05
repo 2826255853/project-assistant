@@ -490,6 +490,42 @@ fn approval_decide(
 }
 
 #[tauri::command]
+fn task_content_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<tasks::results::Content> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::results::ContentRequest>(&window, request)
+        .and_then(|p| tasks::results::content(&app, p));
+    complete(&app, "task_content_get", id, result)
+}
+
+#[tauri::command]
+fn task_changes_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<tasks::results::Changes> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::results::ChangesRequest>(&window, request)
+        .and_then(|p| tasks::results::changes(&app, p));
+    complete(&app, "task_changes_get", id, result)
+}
+
+#[tauri::command]
+fn task_change_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<tasks::results::Diff> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::results::DiffRequest>(&window, request)
+        .and_then(|p| tasks::results::diff(&app, p));
+    complete(&app, "task_change_get", id, result)
+}
+
+#[tauri::command]
 async fn providers_list(
     request: serde_json::Value,
     app: tauri::AppHandle,
@@ -1047,6 +1083,10 @@ async fn ipc_fixture(
         }
         let params: Params = ipc::parse_request(request)?;
         match params.action.as_str() {
+            #[cfg(all(test, windows))]
+            action if action.starts_with("task_ui_") => {
+                tasks::results::desktop_fixture(&app, action)
+            }
             #[cfg(windows)]
             action if action.starts_with("project_") => projects::fixture(&app, action),
             action if action.starts_with("credential_") => {
@@ -1184,7 +1224,10 @@ pub fn run() {
     }
     let state = desktop::DesktopState::from_environment();
     let phase0 = state.phase0;
-    let result = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(test)]
+    let builder = builder.any_thread();
+    let result = builder
         .manage(state)
         .manage(app_state::AppState::default())
         .manage(overlay::OverlayState::default())
@@ -1320,6 +1363,9 @@ pub fn run() {
             task_events_get,
             approvals_get,
             approval_decide,
+            task_content_get,
+            task_changes_get,
+            task_change_get,
             desktop_initialize,
             app_get_status,
             settings_get,
@@ -1360,4 +1406,15 @@ pub fn run() {
             std::process::exit(1);
         }
     }
+}
+
+// Real WebView acceptance runs the same application in a test binary. Only
+// this binary can trust the disposable synthetic HTTPS CA/loopback endpoint.
+#[cfg(all(test, windows))]
+#[test]
+#[ignore = "launched by verify:task-ui in an isolated process"]
+fn task_desktop_acceptance() {
+    assert_eq!(std::env::var("PA_IPC_VERIFY").as_deref(), Ok("1"));
+    assert!(std::env::var_os("PA_OVERLAY_VERIFY_DIR").is_some());
+    run();
 }

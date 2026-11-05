@@ -34,18 +34,18 @@ test("approval receipts omit internal consumer/window authority and cancellation
   }
 });
 
-test("S3-05 exposes session/task gateway and approval decisions only to main", async () => {
+test("S3-06 exposes session/task gateway and approval decisions only to main", async () => {
   const [contracts, taskContracts, client, rust, manifest, main, overlay] = await Promise.all([
     read("../../src/ipc/contracts.ts"), read("../../src/ipc/taskContracts.ts"),
     read("../../src/ipc/client.ts"), read("../../src-tauri/src/lib.rs"),
     read("../../src-tauri/build.rs"), read("../../src-tauri/capabilities/default.json").then(JSON.parse),
     read("../../src-tauri/capabilities/overlay.json").then(JSON.parse),
   ]);
-  assert.ok(contracts.includes('Extract<keyof ImplementedCommandMap, "task_content_get"'));
+  assert.ok(contracts.includes('Extract<keyof ImplementedCommandMap, "active_context_set"'));
   const declared = [...taskContracts.split("export interface TaskCommandMap {")[1].matchAll(/^  ([a-z_]+):/gm)].map(match => match[1]);
   assert.deepEqual(declared.sort(), [...taskCommands].sort(), "every future task command must be checked");
   const implementedCommands = ["session_create", "session_find_by_request", "sessions_list", "session_get", "session_resume", "session_end",
-    "task_start", "task_find_by_request", "tasks_list", "task_get", "task_cancel", "task_events_get", "approvals_get", "approval_decide"];
+    "task_start", "task_find_by_request", "tasks_list", "task_get", "task_cancel", "task_events_get", "approvals_get", "approval_decide", "task_content_get", "task_changes_get", "task_change_get"];
   for (const name of implementedCommands) {
     assert.ok(contracts.match(/export interface ImplementedCommandMap \{([\s\S]*?)^\}/m)?.[1].includes(name), `${name} must be in the callable map`);
     assert.match(client, new RegExp(`\\b${name}:`), `${name} must have a runtime validator`);

@@ -159,6 +159,6 @@ export function AiConfigPage() {
     </div>
     <div className="ai-status" role="status" data-testid="ai-config-status"><strong>{phase === "reading" ? "正在读取配置…" : phase === "saving" ? "正在保存…" : phase === "operating" ? (operationLabel ?? "正在处理操作…") : phase === "failure" ? "操作失败" : notice ?? "配置已读取"}</strong>{operation && <span>操作 {operation.operationId} · {operation.phase}<button type="button" className="quiet-button" onClick={() => void pollOperation(operation.operationId)}>重新查询</button>{!terminal(operation) && <button type="button" className="quiet-button" onClick={() => void cancelOperation()}>取消等待</button>}</span>}</div>
     {error && <ErrorNotice error={error} testId="ai-config-error"/>}
-    <div className="ai-footnote"><p>官方源和外部登录仅作后续预留。当前页面只管理非官方、自有 HTTPS 服务源；真实任务入口将在阶段 3 接入。</p><button type="button" className="quiet-button" onClick={() => void read()} disabled={busy}>重新读取配置</button></div>
+    <div className="ai-footnote"><p>官方源和外部登录仅作后续预留。当前页面管理非官方、自有 HTTPS 服务源；可在主窗口任务页选择项目与会话后提交任务。</p><button type="button" className="quiet-button" onClick={() => void read()} disabled={busy}>重新读取配置</button></div>
   </div>;
 }

@@ -34,7 +34,7 @@ export async function controlledSite(label, key, {tls} = {}) {
     response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     const responseId = `resp_${randomUUID()}`;
     const itemId = `msg_${randomUUID()}`;
-    const text = mode === "echo-secret-success" ? key : `CONTROLLED_${label}_OK`;
+    const text = mode === "echo-secret-success" ? key : mode === "long" ? "S3_LONG_REPLY_<img src=x>_".repeat(3500) : `CONTROLLED_${label}_OK`;
     const item = { id: itemId, type: "message", role: "assistant", status: "in_progress", content: [] };
     const base = { id: responseId, object: "response", created_at: Math.floor(Date.now() / 1000), model: payload.model, status: "in_progress", output: [] };
     let sequence = 0;
@@ -54,7 +54,7 @@ export async function controlledSite(label, key, {tls} = {}) {
     event("response.output_item.added", { output_index: 0, item });
     event("response.content_part.added", { item_id: itemId, output_index: 0, content_index: 0,
       part: { type: "output_text", text: "", annotations: [] } });
-    event("response.output_text.delta", { item_id: itemId, output_index: 0, content_index: 0, delta: text });
+    for (let offset = 0; offset < text.length; offset += 4096) event("response.output_text.delta", { item_id: itemId, output_index: 0, content_index: 0, delta: text.slice(offset, offset + 4096) });
     const finish = () => {
       if (response.destroyed || response.writableEnded) return;
       const part = { type: "output_text", text, annotations: [] };

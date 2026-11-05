@@ -226,6 +226,25 @@ pub fn status(app: &tauri::AppHandle, private_draft: bool) -> AppStatus {
                 provider.reason_code = Some("PA_SETTINGS_STORAGE_FAILED");
             }
         }
+        // Main-window task reads/controls are implemented. Service readiness
+        // describes the owned adapter, never an unsolicited CLI/network probe.
+        let owned = app.state::<crate::owned_process::OwnedProcessState>();
+        let owned_ready = owned.root().is_ok() && !owned.is_blocked();
+        let task_ready = storage_health.0 == "ready"
+            && owned_ready
+            && app.state::<crate::credentials::CredentialsState>().health();
+        for service in result
+            .services
+            .iter_mut()
+            .filter(|s| matches!(s.id, "tasks" | "codex"))
+        {
+            service.state = if task_ready { "ready" } else { "degraded" };
+            service.reason_code = if task_ready {
+                None
+            } else {
+                Some("PA_TASK_RECOVERY_BLOCKED")
+            };
+        }
         let logs = app.state::<crate::logging::LoggingState>().status();
         let logging = result
             .services

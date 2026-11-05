@@ -1,0 +1,21 @@
+.tasks-page { display: grid; gap: 18px; }
+.task-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.task-toolbar h2 { margin-right: auto; }
+.task-panel { background: var(--surface, #fff); border: 1px solid #dce3ec; border-radius: 14px; padding: 22px; min-width: 0; }
+.task-panel h2 { margin-top: 0; font-size: 19px; }
+.task-context label, .task-selection label { display: grid; gap: 7px; }
+.task-context select { min-width: 220px; max-width: 100%; }
+.task-path, .task-config { overflow-wrap: anywhere; }
+.task-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 18px; }
+.task-composer form { display: grid; gap: 12px; margin-top: 15px; }
+.task-composer textarea { width: 100%; min-height: 150px; resize: vertical; padding: 12px; box-sizing: border-box; }
+.task-selection { display: grid; gap: 10px; margin: 16px 0; }
+.task-config { padding: 14px; background: #f1f5fa; border-radius: 8px; margin-top: 14px; }
+.task-list { display: grid; gap: 8px; max-height: 400px; overflow: auto; }
+.task-list button { display: grid; gap: 6px; text-align: left; padding: 12px; }
+.task-list [aria-pressed=true] { border-color: #4267a7; background: #eaf1ff; }
+.task-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; background: #f6f8fb; border: 1px solid #e1e7f0; border-radius: 8px; padding: 16px; user-select: text; }
+.task-warning, .task-approval { background: #fff6e7; border: 1px solid #e3c688; border-radius: 8px; padding: 14px; }
+.task-change { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 0; }
+.task-change span { margin-right: auto; overflow-wrap: anywhere; }
+@media (max-width: 1050px) { .task-layout { grid-template-columns: minmax(0, 1fr); } }

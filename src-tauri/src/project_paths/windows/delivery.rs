@@ -250,6 +250,36 @@ pub(crate) fn file(root: &PinnedTarget, relative: &str) -> Result<PinnedTarget, 
     Ok(pinned)
 }
 
+/// Task diffs are cached bytes, never a new path-based file read. Bind their
+/// locator to the current file ID (or the pinned parent and absent deleted leaf).
+pub(crate) fn task_change_identity(
+    verified: &VerifiedDirectory,
+    relative: &str,
+    deleted: bool,
+) -> Result<String, ErrorCode> {
+    if !crate::project_contract::valid_relative_path(relative) {
+        return Err(ErrorCode::ProjectFileOutsideProject);
+    }
+    let root = directory(verified)?;
+    if !deleted {
+        return file(&root, relative).map(|p| p.identity.storage_value());
+    }
+    let target = root.path.join(relative.replace('/', "\\"));
+    let parent = target
+        .parent()
+        .ok_or(ErrorCode::ProjectFileOutsideProject)?;
+    let pinned = pin(parent, true)?;
+    if !same_or_child_path(&root.path, &pinned.path)
+        || std::fs::symlink_metadata(&target).is_ok()
+        || std::fs::symlink_metadata(&target)
+            .err()
+            .is_none_or(|e| e.kind() != std::io::ErrorKind::NotFound)
+    {
+        return Err(ErrorCode::ProjectFileOutsideProject);
+    }
+    Ok(format!("deleted:{}", pinned.identity.storage_value()))
+}
+
 fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain(Some(0)).collect()
 }

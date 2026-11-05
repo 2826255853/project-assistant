@@ -1,5 +1,28 @@
 use super::*;
 
+#[test]
+fn task_change_paths_are_task_relative_and_reject_windows_escape_shapes() {
+    let root = Path::new(r"C:\work\项目");
+    for (input, expected) in [
+        (r"C:\work\项目\src\a.txt", "src/a.txt"),
+        ("src/a.txt", "src/a.txt"),
+    ] {
+        assert_eq!(relative_change_path(root, input).unwrap(), expected);
+    }
+    for input in [
+        r"C:\work\项目-other\a.txt",
+        "../outside",
+        "/outside",
+        r"\\server\share\file",
+        "a:stream",
+        "src/../file",
+        "CON",
+        "src/trailing.",
+    ] {
+        assert!(relative_change_path(root, input).is_err());
+    }
+}
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
@@ -328,6 +351,7 @@ fn actual_cli_task_gateway_acceptance() {
                 TaskEvent::Running => "running",
                 TaskEvent::ReplyDelta { .. } => "reply_delta",
                 TaskEvent::Progress { .. } => "progress",
+                TaskEvent::FileChanges { .. } => "file_changes",
                 TaskEvent::ApprovalRequired { .. } => "approval_required",
                 TaskEvent::ApprovalPoll => "approval_poll",
                 TaskEvent::ApprovalExpired => "approval_expired",

@@ -1,8 +1,10 @@
 # 本机项目助手 · 桌面基础
 
+步骤 3.6（S3-06）于 2026-11-06 通过主窗口会话/任务与受限结果展示范围：导航“任务”已接入项目/会话、配置确认、提交、审批、取消、历史、回复/进度和任务差异；main-only 内容/差异读取按任务授权及文件身份复核。`npm run verify:task-ui` 通过 190 Rust、40 IPC、15 离线及 built/dev 各 12 项真实 WebView 检查；另通过网关、审批、隔离路由子集与普通应用构建/启动退出回归。适配器更新为 v3，旧能力/连接证据需主动重新核验；schema 仍为 v7。文件补丁批准仍受限，差异/缺口/故障注入与真实任务证据分列，overlay、并发整合和阶段回归仍待 3.7–3.9，M3 未整体通过。详见 [步骤 3.6](docs/phase-3/step-3.6.md)，当前报告 `artifacts/phase-3-6/report.json`。以下保留各步当轮历史范围。
+
 阶段 3 步骤 3.5（S3-05）于 2026-11-05 通过单次命令审批与取消服务范围：main-only `approval_decide` 已接入，决定/claim/修订/事件/审计原子提交，CLI 确认后才记录消费；过期、取消、进程退出和重启使待决审批失效，决定不自动重发。`npm run verify:approvals` 通过 186 项 Rust、38 项 IPC、15 项离线及 6 个真实 CLI/合成 HTTPS 场景；另通过网关、隔离路由子集和 built 构建。当前 CLI 0.166.0-alpha.6，适配器 v2 需重新核验旧能力/连接证据。文件变更回调缺少绑定补丁时继续拒绝，主窗口任务控件/overlay/运行中切换和阶段汇总仍待 3.6–3.9，M3 未通过。详情见 [步骤 3.5](docs/phase-3/step-3.5.md)，报告为 `artifacts/phase-3-5/report.json`。
 
-3.1 的契约与未开放断言、3.2 的项目 AI 默认、3.3 的 v7 仓储/恢复、3.4 的真实任务网关分别保留其历史验收范围；当前可调用命令以 `ImplementedCommandMap`、Rust 注册和 capability 为准。task 内容/差异正文及 overlay 任务入口仍未开放。见 [计划第 23 章](计划文档.txt) 和 `docs/phase-3/step-3.1.md` 至 `step-3.4.md`。
+3.1 的契约与未开放断言、3.2 的项目 AI 默认、3.3 的 v7 仓储/恢复、3.4 的真实任务网关分别保留其历史验收范围；当前可调用命令以 `ImplementedCommandMap`、Rust 注册和 capability 为准。task 内容/差异正文已在 3.6 对 main 开放，overlay 任务入口仍关闭。见 [计划第 23 章](计划文档.txt) 和 `docs/phase-3/step-3.1.md` 至 `step-3.6.md`。
 
 阶段 2 步骤 2.6（S2-06）已于 2026-10-28 接入 main-only 正式 Rust Git 摘要服务：安全发现 Git、授权目录复核、固定只读参数、受控环境、有界进程与输出、5 秒内存缓存和失败降级。其当轮验收报告 `artifacts/phase-2-6/report.json` 通过 156 项 Rust、33 项 IPC、15 项离线 Codex、52 项存储及 built/dev 桌面，覆盖空仓库、分支、detached HEAD、工作区变更、非仓库、缺失 Git、超时、异常输出和缓存刷新。该轮页面尚未接入，现由 2.7 完成。本机 Windows x64 与标准系统 Git 安装范围通过；其他 Windows 版本、ARM64、缺少 Git 的干净机器和用户级/自定义 Git 安装未实测。详细边界见 [步骤 2.6](docs/phase-2/step-2.6.md)。
 
