@@ -25,9 +25,9 @@ const report = {
   checks: [],
   routes: [],
   limits: [
-    "No task IPC or UI command is registered; this step exercises the internal gateway and event normalizer.",
+    "This suite exercises the internal gateway and event normalizer; desktop task UI acceptance remains in S3-06 through S3-09.",
     "The CLI receives only an application-owned loopback route token; site keys remain in Rust memory.",
-    "Approval decisions remain in S3-05; gateway records a normalized request and denies it by default."
+    "Approval decision/consumption acceptance is covered separately by verify:approvals."
   ]
 };
 

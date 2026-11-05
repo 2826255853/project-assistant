@@ -1,4 +1,4 @@
-// S3-01 design contracts only. No invocation, service, permission or admission.
+// Shared task contracts; only ImplementedCommandMap grants an invocation path.
 import type { AiSelection, AppError, PublicSnapshot } from "./contracts";
 
 export type SessionStatus = "active" | "closed" | "interrupted";
@@ -136,13 +136,16 @@ export function isApprovalView(value: unknown): value is ApprovalView {
   return record(value) && exact(value, ["id", "taskId", "sessionId", "revision", "operationKind", "operationFingerprint", "displaySummary", "decision", "consumption", "requestedAt", "expiresAt", "decidedAt"]) &&
     uuid(value.id) && uuid(value.taskId) && uuid(value.sessionId) && revision(value.revision) &&
     ["command", "file_change", "unknown"].includes(String(value.operationKind)) &&
-    typeof value.operationFingerprint === "string" && /^[0-9a-f]{64}$/.test(value.operationFingerprint) && bounded(value.displaySummary, 512) &&
+    typeof value.operationFingerprint === "string" && /^[0-9a-f]{64}$/.test(value.operationFingerprint) && bounded(value.displaySummary, 2048) &&
     ["pending", "approved", "denied", "expired", "interrupted"].includes(String(value.decision)) &&
     ["unconsumed", "claimed", "acknowledged", "abandoned"].includes(String(value.consumption)) &&
     time(value.requestedAt) && time(value.expiresAt) && (value.decidedAt === null || time(value.decidedAt));
 }
 export function isApprovalPage(value: unknown): value is { items: ApprovalView[] } {
   return record(value) && exact(value, ["items"]) && Array.isArray(value.items) && value.items.length <= 100 && value.items.every(isApprovalView);
+}
+export function isApprovalReceipt(value: unknown): value is ApprovalReceipt {
+  return record(value) && exact(value, ["approval", "duplicate"]) && isApprovalView(value.approval) && typeof value.duplicate === "boolean";
 }
 export interface TaskCommandMap {
   active_context_set: { params: { projectId: string; sessionId: string; selection: AiSelection; expectedContextRevision: number }; data: ActiveTaskContext };
@@ -160,7 +163,7 @@ export interface TaskCommandMap {
   task_content_get: { params: { taskId: string; channel: "reply" | "progress"; cursor?: string }; data: TaskContent };
   task_events_get: { params: { taskId: string; cursor?: string; limit?: number }; data: TaskEventPage };
   approvals_get: { params: { taskId: string }; data: { items: ApprovalView[] } };
-  approval_decide: { params: { approvalId: string; taskId: string; expectedRevision: number; operationFingerprint: string; decision: "approve" | "deny" }; data: ApprovalReceipt };
+  approval_decide: { params: { approvalId: string; taskId: string; expectedRevision: number; expectedTaskRevision: number; operationFingerprint: string; decision: "approve" | "deny" }; data: ApprovalReceipt };
   task_changes_get: { params: { taskId: string; cursor?: string; limit?: number }; data: TaskChangePage };
   task_change_get: { params: { taskId: string; changeId: string }; data: TaskDiff };
   // S3-07: bound to server-side active context; no arbitrary IDs/config/cwd.
@@ -170,5 +173,5 @@ export interface TaskCommandMap {
   overlay_task_cancel: { params: { expectedContextRevision: number; expectedTaskRevision: number }; data: CancelReceipt };
 }
 
-// S3-04 exposes the main-window session/task gateway and authoritative state
-// journal only. Approval decisions, content bodies, and overlay commands stay closed.
+// S3-05 adds main-window approval decisions. Content bodies and overlay commands
+// remain closed until their corresponding implementation steps.

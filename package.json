@@ -22,6 +22,7 @@
     "verify:storage": "node scripts/verify-storage.mjs",
     "verify:projects": "node scripts/verify-projects.mjs",
     "verify:task-gateway": "node scripts/verify-task-gateway.mjs",
+    "verify:approvals": "node scripts/verify-approvals.mjs",
     "test:ipc": "node --test scripts/ipc/*.test.mjs",
     "verify:ipc": "node scripts/verify-ipc.mjs",
     "verify:codex": "node scripts/verify-codex.mjs",

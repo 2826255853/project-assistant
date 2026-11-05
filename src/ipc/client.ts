@@ -11,7 +11,7 @@ import { isLogStatus } from "./logging";
 import { isCredentialMutation } from "./credentials";
 import { isProviderList, isProviderProfile, isModels, isReceipt, isOperation, isRemoved, isAccepted } from "./providers";
 import { errorForCode } from "./errors";
-import { isSessionView, isSessionReceipt, isSessionPage, isTaskView, isTaskReceipt, isTaskPage, isCancelReceipt, isTaskEventPage, isApprovalPage } from "./taskContracts";
+import { isSessionView, isSessionReceipt, isSessionPage, isTaskView, isTaskReceipt, isTaskPage, isCancelReceipt, isTaskEventPage, isApprovalPage, isApprovalReceipt } from "./taskContracts";
 import { isProjectView, isProjectPickerResult, isRemovedProject, isProjectListPage, isProjectOpenAccepted, isProjectFilePickerResult, isGitSummary, isSelectedProject, isProjectSettingsView } from "./projects";
 import { ProjectSearchController } from "./projectSearch";
 import type { ProjectSearchState } from "./projectSearch";
@@ -37,13 +37,13 @@ const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMa
   sessions_list: isSessionPage, session_get: isSessionView, session_resume: isSessionView, session_end: isSessionView,
   task_start: isTaskReceipt, task_find_by_request: value => value === null || isTaskView(value), tasks_list: isTaskPage,
   task_get: isTaskView, task_cancel: isCancelReceipt, task_events_get: isTaskEventPage,
-  approvals_get: isApprovalPage,
+  approvals_get: isApprovalPage, approval_decide: isApprovalReceipt,
 };
 export function call(command: "settings_get", params: { scope: "global" }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SettingsView>;
 export function call(command: "settings_get", params: { scope: "project"; projectId: string }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ProjectSettingsView>;
 export function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]>;
 export async function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]> {
-  if ((command === "logs_get_status" || command === "logs_clear" || command === "credential_put" || command === "credential_remove" || command.startsWith("project") || command.startsWith("provider") || command.startsWith("operation_") || command.startsWith("session") || command.startsWith("task") || command === "sessions_list" || command === "tasks_list" || command === "approvals_get") && !isMainWindow()) throw errorForCode("PA_IPC_PERMISSION_DENIED");
+  if ((command === "logs_get_status" || command === "logs_clear" || command === "credential_put" || command === "credential_remove" || command.startsWith("project") || command.startsWith("provider") || command.startsWith("operation_") || command.startsWith("session") || command.startsWith("task") || command === "sessions_list" || command === "tasks_list" || command === "approvals_get" || command === "approval_decide") && !isMainWindow()) throw errorForCode("PA_IPC_PERMISSION_DENIED");
   const timeoutMs = command === "project_pick_file" ? 120000 : command === "project_open_directory" || command === "project_open_file" ? 12000 : command === "project_git_summary" ? 8000 : undefined;
   const wire = await awaitTransport(() => invoke<unknown>(command, { request: { apiVersion: API_VERSION, params } }), { timeoutMs, ...options });
   const responseValidator = (command === "settings_get"

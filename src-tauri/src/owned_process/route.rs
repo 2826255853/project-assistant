@@ -95,7 +95,7 @@ impl Route {
                             .and_then(|body| {
                                 runtime.block_on(async {
                                     tokio::select! {
-                                    value = forward(&client, target.clone(), body, &secret, &observed, &selection.model) => value,
+                                    value = forward(&client, target.clone(), body, &secret, &observed, &selection.model, selection.task_tools) => value,
                                         _ = cancelled(&worker_stop, &cancel) => Err(Failure::Cancelled),
                                     }
                                 })
@@ -324,8 +324,10 @@ fn receive(
         return Err(Failure::Unsafe);
     }
     // A connection probe never advertises executable tools to the upstream.
-    value["tools"] = serde_json::json!([]);
-    value["tool_choice"] = serde_json::json!("none");
+    if !selection.task_tools {
+        value["tools"] = serde_json::json!([]);
+        value["tool_choice"] = serde_json::json!("none");
+    }
     serde_json::to_vec(&value).map_err(|_| Failure::Unsafe)
 }
 
@@ -336,6 +338,7 @@ async fn forward(
     secret: &SecretBuffer,
     evidence: &Evidence,
     model: &str,
+    task_tools: bool,
 ) -> Result<Vec<u8>> {
     let mut header = reqwest::header::HeaderValue::from_bytes(
         &[b"Bearer ".as_slice(), secret.as_bytes()].concat(),
@@ -371,7 +374,7 @@ async fn forward(
     {
         return Err(Failure::TestFailed);
     }
-    validate_probe_response(&bytes, model)?;
+    validate_response(&bytes, model, task_tools)?;
     evidence.verified.fetch_add(1, Ordering::AcqRel);
     Ok(bytes)
 }
@@ -379,10 +382,33 @@ async fn forward(
 /// Only text/reasoning output can reach this configuration-only CLI session.
 /// A malicious provider cannot smuggle a shell/function call into a probe.
 fn validate_probe_response(bytes: &[u8], model: &str) -> Result<()> {
-    fn safe_types(value: &serde_json::Value) -> bool {
+    validate_response(bytes, model, false)
+}
+fn validate_response(bytes: &[u8], model: &str, task_tools: bool) -> Result<()> {
+    fn safe_types(value: &serde_json::Value, task_tools: bool) -> bool {
         match value {
             serde_json::Value::Object(object) => {
                 if let Some(kind) = object.get("type").and_then(|v| v.as_str()) {
+                    if task_tools && kind == "function_call" {
+                        return object
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|name| {
+                                matches!(
+                                    name,
+                                    "exec_command" | "shell_command" | "shell" | "apply_patch"
+                                )
+                            });
+                    }
+                    if task_tools
+                        && matches!(
+                            kind,
+                            "response.function_call_arguments.delta"
+                                | "response.function_call_arguments.done"
+                        )
+                    {
+                        return true;
+                    }
                     if !matches!(
                         kind,
                         "response.created"
@@ -406,9 +432,11 @@ fn validate_probe_response(bytes: &[u8], model: &str) -> Result<()> {
                         return false;
                     }
                 }
-                object.values().all(safe_types)
+                object.values().all(|value| safe_types(value, task_tools))
             }
-            serde_json::Value::Array(array) => array.iter().all(safe_types),
+            serde_json::Value::Array(array) => {
+                array.iter().all(|value| safe_types(value, task_tools))
+            }
             _ => true,
         }
     }
@@ -417,7 +445,7 @@ fn validate_probe_response(bytes: &[u8], model: &str) -> Result<()> {
     for line in text.lines().filter_map(|line| line.strip_prefix("data:")) {
         let value: serde_json::Value =
             serde_json::from_str(line.trim()).map_err(|_| Failure::TestFailed)?;
-        if !safe_types(&value) {
+        if !safe_types(&value, task_tools) {
             return Err(Failure::TestFailed);
         }
         if let Some(actual) = value.pointer("/response/model").and_then(|v| v.as_str()) {
@@ -438,6 +466,26 @@ fn validate_probe_response(bytes: &[u8], model: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn task_tools_are_explicit_and_configuration_probes_continue_to_reject_them() {
+        let response = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"fixture-model\",\"output\":[{\"type\":\"function_call\",\"name\":\"exec_command\",\"arguments\":\"{}\"}]}}\n\n";
+        assert!(validate_response(response, "fixture-model", true).is_ok());
+        assert_eq!(
+            validate_probe_response(response, "fixture-model"),
+            Err(Failure::TestFailed)
+        );
+        let unknown = String::from_utf8(response.to_vec())
+            .unwrap()
+            .replace("exec_command", "unregistered_tool");
+        assert_eq!(
+            validate_response(unknown.as_bytes(), "fixture-model", true),
+            Err(Failure::TestFailed)
+        );
+        assert_eq!(
+            validate_response(response, "wrong-model", true),
+            Err(Failure::Unsafe)
+        );
+    }
     #[test]
     fn rejects_private_shared_and_transition_addresses() {
         for text in [

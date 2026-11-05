@@ -157,6 +157,7 @@ export interface ImplementedCommandMap {
   task_cancel: CommandMap["task_cancel"];
   task_events_get: CommandMap["task_events_get"];
   approvals_get: CommandMap["approvals_get"];
+  approval_decide: CommandMap["approval_decide"];
 }
 type Assert<T extends true> = T;
 export type FutureProjectCommandsRemainUnimplemented = Assert<
@@ -165,7 +166,7 @@ export type FutureProjectCommandsRemainUnimplemented = Assert<
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.
 export type FutureTaskCommandsRemainUnimplemented = Assert<
-  Extract<keyof ImplementedCommandMap, "task_content_get" | "approval_decide" | "task_changes_get" | "task_change_get" | "active_context_set" | "task_start_from_active" | "overlay_task_get" | "overlay_task_cancel" | "overlay_task_find_by_request"> extends never ? true : false
+  Extract<keyof ImplementedCommandMap, "task_content_get" | "task_changes_get" | "task_change_get" | "active_context_set" | "task_start_from_active" | "overlay_task_get" | "overlay_task_cancel" | "overlay_task_find_by_request"> extends never ? true : false
 >;
 export interface CommandMap extends TaskCommandMap {
   framework_probe: { params: { message: string }; data: ProbeReply };

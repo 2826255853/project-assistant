@@ -35,7 +35,7 @@ use tauri::Manager;
 use url::Url;
 
 const PROVIDER: &str = "project_assistant_owned";
-pub(crate) const ADAPTER_VERSION: &str = "owned-stdio-relay-v1";
+pub(crate) const ADAPTER_VERSION: &str = "owned-stdio-relay-v2";
 const MAX_FRAME: u64 = 1024 * 1024;
 /// Task streams are deliberately smaller than the transport frame limit. A
 /// task can produce many frames, so the gateway applies both per-frame and
@@ -91,9 +91,24 @@ pub(crate) enum TaskEvent {
         text: String,
     },
     ApprovalRequired {
+        item_id: String,
         external_request_id: String,
         operation_kind: String,
         operation_fingerprint: String,
+        display_summary: String,
+    },
+    ApprovalPoll,
+    ApprovalExpired,
+    OperationCompleted {
+        succeeded: bool,
+    },
+    ApprovalAcknowledged {
+        approval_id: String,
+        consume_request_id: String,
+    },
+    ApprovalAbandoned {
+        approval_id: String,
+        consume_request_id: String,
     },
     Completed,
     Cancelled,
@@ -105,6 +120,34 @@ pub(crate) enum TaskOutcome {
     Completed,
     Cancelled,
     Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApprovalReply {
+    pub approval_id: String,
+    pub consume_request_id: String,
+    pub accepted: bool,
+}
+type TaskEventResult = std::result::Result<Option<ApprovalReply>, ErrorCode>;
+
+fn safe_approval_text(value: &str, limit: usize) -> bool {
+    let lower = value.to_ascii_lowercase();
+    !value.trim().is_empty()
+        && value.len() <= limit
+        && !value.chars().any(char::is_control)
+        && !value.chars().any(|ch| matches!(ch, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        && ![
+            "secret",
+            "password",
+            "api_key",
+            "api-key",
+            "bearer ",
+            "sk-",
+            "pa_owned_route_token",
+            "synthetic-",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 #[derive(Debug, Clone)]
@@ -122,14 +165,39 @@ pub(crate) struct TaskRun {
     pub verified_responses: usize,
 }
 
+#[derive(Default)]
+struct Cancellation {
+    requested: AtomicBool,
+    dispatch: Mutex<()>,
+}
 #[derive(Clone, Default)]
-pub(crate) struct Cancel(Arc<AtomicBool>);
+pub(crate) struct Cancel(Arc<Cancellation>);
 impl Cancel {
+    pub(crate) fn request_after<T>(
+        &self,
+        action: impl FnOnce() -> std::result::Result<(T, bool), ErrorCode>,
+    ) -> std::result::Result<T, ErrorCode> {
+        let _dispatch = self
+            .0
+            .dispatch
+            .lock()
+            .map_err(|_| ErrorCode::ProcessExitFailed)?;
+        let (result, accepted) = action()?;
+        if accepted {
+            self.0.requested.store(true, Ordering::Release);
+        }
+        Ok(result)
+    }
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        let _dispatch = self
+            .0
+            .dispatch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.0.requested.store(true, Ordering::Release);
     }
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.requested.load(Ordering::Acquire)
     }
     fn check(&self) -> Result<()> {
         if self.is_cancelled() {
@@ -256,6 +324,7 @@ pub(crate) fn catalog_candidate(
         origin: p.endpoint_origin,
         model: "catalog-discovery".into(),
         effort: "medium".into(),
+        task_tools: false,
         fixture: false,
         #[cfg(test)]
         fixture_ca: None,
@@ -381,6 +450,7 @@ struct Selection {
     model: String,
     effort: String,
     #[serde(skip)]
+    task_tools: bool,
     fixture: bool,
     #[cfg(test)]
     #[serde(skip)]
@@ -493,6 +563,30 @@ impl OwnedProcessState {
     pub(crate) fn lock_serial(&self) -> std::result::Result<MutexGuard<'_, ()>, ErrorCode> {
         self.serial.lock().map_err(|_| ErrorCode::ProcessExitFailed)
     }
+
+    pub(crate) fn lock_serial_cancellable(
+        &self,
+        cancel: &Cancel,
+    ) -> std::result::Result<MutexGuard<'_, ()>, ErrorCode> {
+        let deadline = Instant::now() + Duration::from_secs(5 * 60);
+        loop {
+            if cancel.is_cancelled() {
+                return Err(ErrorCode::ProcessCancelled);
+            }
+            if Instant::now() >= deadline {
+                return Err(ErrorCode::CodexRequestTimeout);
+            }
+            match self.serial.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    thread::sleep(Duration::from_millis(25))
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(ErrorCode::ProcessExitFailed);
+                }
+            }
+        }
+    }
 }
 
 /// Internal profile-service integration. The DB supplies every connection field;
@@ -545,6 +639,7 @@ pub(crate) fn probe_candidate(
         origin: selection.endpoint_origin,
         model: model.into(),
         effort: effort.into(),
+        task_tools: false,
         fixture: false,
         #[cfg(test)]
         fixture_ca: None,
@@ -629,7 +724,7 @@ pub(crate) fn run_task(
     project_identity: &str,
     prompt: &str,
     cancel: Cancel,
-    mut on_event: impl FnMut(TaskEvent) -> std::result::Result<(), ErrorCode>,
+    mut on_event: impl FnMut(TaskEvent) -> TaskEventResult,
 ) -> std::result::Result<TaskRun, ErrorCode> {
     if prompt.is_empty()
         || prompt.len() > MAX_TASK_PROMPT
@@ -652,6 +747,7 @@ pub(crate) fn run_task(
         origin: origin.to_owned(),
         model: model.to_owned(),
         effort: effort.to_owned(),
+        task_tools: true,
         fixture: false,
         #[cfg(test)]
         fixture_ca: None,
@@ -668,12 +764,10 @@ pub(crate) fn run_task(
     .map_err(Failure::code)?;
     candidate.expected_project_identity = Some(project_identity.to_owned());
     let callback_failure = std::cell::RefCell::new(None);
-    let callback_cancel = cancel.clone();
     let mut callback = |event| match on_event(event) {
-        Ok(()) => Ok(()),
+        Ok(reply) => Ok(reply),
         Err(error) => {
             *callback_failure.borrow_mut() = Some(error);
-            callback_cancel.cancel();
             Err(error)
         }
     };
@@ -724,6 +818,7 @@ pub(crate) fn provider_acceptance_probe(
             .ascii_serialization(),
         model: model.into(),
         effort: effort.into(),
+        task_tools: false,
         fixture: true,
         fixture_ca: Some(ca),
     };
@@ -763,6 +858,7 @@ pub(crate) fn provider_acceptance_catalog(
         origin: Url::parse(endpoint).unwrap().origin().ascii_serialization(),
         model: "catalog-discovery".into(),
         effort: "medium".into(),
+        task_tools: false,
         fixture: true,
         fixture_ca: Some(ca),
     };
@@ -874,9 +970,11 @@ struct Candidate {
     deadline: Instant,
     next_id: u64,
     terminal: VecDeque<Value>,
+    deferred: VecDeque<Value>,
     closed: bool,
     stage: &'static str,
     active_turn: Option<(String, String)>,
+    approval_ttl: Duration,
 }
 
 struct TaskAccumulator {
@@ -887,6 +985,7 @@ struct TaskAccumulator {
     progress: String,
     window_started: Instant,
     window_events: u32,
+    approval_requests: std::collections::HashSet<String>,
 }
 impl TaskAccumulator {
     fn new() -> Self {
@@ -898,6 +997,7 @@ impl TaskAccumulator {
             progress: String::new(),
             window_started: Instant::now(),
             window_events: 0,
+            approval_requests: Default::default(),
         }
     }
     fn rate(&mut self) -> Result<()> {
@@ -916,8 +1016,8 @@ impl TaskAccumulator {
     fn push(
         &mut self,
         event: TaskEvent,
-        on_event: &mut dyn FnMut(TaskEvent) -> std::result::Result<(), ErrorCode>,
-    ) -> Result<()> {
+        on_event: &mut dyn FnMut(TaskEvent) -> TaskEventResult,
+    ) -> Result<Option<ApprovalReply>> {
         self.rate()?;
         match &event {
             TaskEvent::ReplyDelta { text } => {
@@ -941,8 +1041,7 @@ impl TaskAccumulator {
             _ => {}
         }
         self.events.push(event.clone());
-        on_event(event).map_err(|_| Failure::Protocol)?;
-        Ok(())
+        on_event(event).map_err(|_| Failure::Protocol)
     }
 }
 
@@ -1030,9 +1129,11 @@ impl Candidate {
             deadline: Instant::now() + timeout,
             next_id: 0,
             terminal: VecDeque::new(),
+            deferred: VecDeque::new(),
             closed: false,
             stage: "created",
             active_turn: None,
+            approval_ttl: Duration::from_secs(5 * 60),
         })
     }
     fn guard(&self) -> Result<()> {
@@ -1056,6 +1157,8 @@ impl Candidate {
         Ok(())
     }
     fn send(&mut self, value: Value) -> Result<()> {
+        let cancel = self.cancel.clone();
+        let _dispatch = cancel.0.dispatch.lock().map_err(|_| Failure::Unsafe)?;
         self.guard()?;
         let input = self.stdin.as_mut().ok_or(Failure::Disconnected)?;
         serde_json::to_writer(&mut *input, &value).map_err(|_| Failure::Disconnected)?;
@@ -1070,6 +1173,9 @@ impl Candidate {
     fn receive_until(&mut self, deadline: Instant) -> Result<Value> {
         loop {
             self.guard()?;
+            if let Some(value) = self.deferred.pop_front() {
+                return Ok(value);
+            }
             if Instant::now() >= deadline {
                 return Err(Failure::Timeout);
             }
@@ -1086,6 +1192,42 @@ impl Candidate {
                         return Err(Failure::Disconnected);
                     }
                 }
+            }
+        }
+    }
+    fn defer_while_awaiting_approval(&mut self, thread_id: &str, turn_id: &str) -> Result<()> {
+        loop {
+            match self.messages.try_recv() {
+                Ok(value) => {
+                    let value = value?;
+                    let method = value
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .ok_or(Failure::Protocol)?;
+                    if value.get("id").is_some()
+                        || matches!(
+                            method,
+                            "turn/completed" | "error" | "serverRequest/resolved"
+                        )
+                    {
+                        return Err(Failure::Protocol);
+                    }
+                    if value
+                        .pointer("/params/threadId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id != thread_id)
+                        || value
+                            .pointer("/params/turnId")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| id != turn_id)
+                        || self.deferred.len() >= 64
+                    {
+                        return Err(Failure::Protocol);
+                    }
+                    self.deferred.push_back(value);
+                }
+                Err(mpsc::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::TryRecvError::Disconnected) => return Err(Failure::Disconnected),
             }
         }
     }
@@ -1210,7 +1352,7 @@ impl Candidate {
     fn task(
         &mut self,
         prompt: &str,
-        on_event: &mut dyn FnMut(TaskEvent) -> std::result::Result<(), ErrorCode>,
+        on_event: &mut dyn FnMut(TaskEvent) -> TaskEventResult,
     ) -> Result<TaskRun> {
         self.stage = "initialize";
         self.rpc(
@@ -1256,6 +1398,7 @@ impl Candidate {
             .ok_or(Failure::Protocol)?
             .to_owned();
         let mut acc = TaskAccumulator::new();
+        let mut pending_approval_ack: Option<(String, String, ApprovalReply)> = None;
         acc.push(TaskEvent::Running, on_event)?;
         self.stage = "turn";
         let turn = self.rpc(
@@ -1292,9 +1435,14 @@ impl Candidate {
             if value.get("method").is_none() {
                 return Err(Failure::Protocol);
             }
-            if let Some(outcome) =
-                self.task_event(value, &thread_id, &turn_id, &mut acc, on_event)?
-            {
+            if let Some(outcome) = self.task_event(
+                value,
+                &thread_id,
+                &turn_id,
+                &mut acc,
+                &mut pending_approval_ack,
+                on_event,
+            )? {
                 self.active_turn = None;
                 return Ok(TaskRun {
                     external_session_id: thread_id,
@@ -1324,7 +1472,8 @@ impl Candidate {
         thread_id: &str,
         turn_id: &str,
         acc: &mut TaskAccumulator,
-        on_event: &mut dyn FnMut(TaskEvent) -> std::result::Result<(), ErrorCode>,
+        pending_approval_ack: &mut Option<(String, String, ApprovalReply)>,
+        on_event: &mut dyn FnMut(TaskEvent) -> TaskEventResult,
     ) -> Result<Option<TaskOutcome>> {
         let method = message
             .get("method")
@@ -1332,6 +1481,11 @@ impl Candidate {
             .ok_or(Failure::Protocol)?;
         let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
         if method.ends_with("/requestApproval") {
+            if params.get("threadId").and_then(Value::as_str) != Some(thread_id)
+                || params.get("turnId").and_then(Value::as_str) != Some(turn_id)
+            {
+                return Err(Failure::Protocol);
+            }
             let id = message.get("id").cloned().ok_or(Failure::Protocol)?;
             let _item_id = params
                 .get("itemId")
@@ -1340,12 +1494,42 @@ impl Candidate {
                     !v.is_empty() && v.len() <= 96 && v.bytes().all(|b| b.is_ascii_graphic())
                 })
                 .ok_or(Failure::Protocol)?;
-            let operation_kind = if method.starts_with("item/commandExecution/") {
+            // Current fileChange callbacks contain only grantRoot, not a bound
+            // patch. They cannot grant an unseen patch or a session-wide root.
+            let command = params
+                .get("command")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    safe_approval_text(value, 1800) && !value.contains(&self.route.token)
+                });
+            let cwd_matches = params
+                .get("cwd")
+                .and_then(Value::as_str)
+                .and_then(|value| Path::new(value).canonicalize().ok())
+                .as_ref()
+                == Some(&self.cwd);
+            let command_supported = method == "item/commandExecution/requestApproval"
+                && params
+                    .get("environmentId")
+                    .is_none_or(|value| value.is_null() || value.as_str() == Some("local"))
+                && params
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_none_or(|kind| kind == "command")
+                && cwd_matches
+                && command.is_some()
+                && ["networkApprovalContext", "proposedNetworkPolicyAmendments"]
+                    .iter()
+                    .all(|key| params.get(*key).is_none_or(Value::is_null));
+            let operation_kind = if command_supported {
                 "command"
-            } else if method.starts_with("item/fileChange/") {
-                "file_change"
             } else {
                 "unknown"
+            };
+            let display_summary = if command_supported {
+                format!("单次执行命令：{}", command.unwrap())
+            } else {
+                "无法安全绑定的操作，已拒绝。".to_owned()
             };
             let request_bytes = serde_json::to_vec(&params).map_err(|_| Failure::Protocol)?;
             if request_bytes.len() > MAX_FRAME as usize {
@@ -1355,23 +1539,71 @@ impl Candidate {
             digest.update(method.as_bytes());
             digest.update([0]);
             digest.update(request_bytes);
+            digest.update([0]);
+            digest.update(serde_json::to_vec(&id).map_err(|_| Failure::Protocol)?);
+            digest.update([0]);
+            digest.update(self.cwd.to_string_lossy().as_bytes());
+            if let Some(identity) = &self.expected_project_identity {
+                digest.update(identity.as_bytes());
+            }
             let fingerprint = format!("{:x}", digest.finalize());
-            acc.push(
+            let request_id = match &id {
+                Value::String(value) => value.clone(),
+                Value::Number(value) => value.to_string(),
+                _ => return Err(Failure::Protocol),
+            };
+            if !acc.approval_requests.insert(request_id.clone()) {
+                return Err(Failure::Protocol);
+            }
+            let item_id = _item_id.to_owned();
+            if pending_approval_ack.is_some() {
+                return Err(Failure::Protocol);
+            }
+            let mut reply = acc.push(
                 TaskEvent::ApprovalRequired {
-                    external_request_id: match &id {
-                        Value::String(value) => value.clone(),
-                        Value::Number(value) => value.to_string(),
-                        _ => return Err(Failure::Protocol),
-                    },
+                    item_id: item_id.clone(),
+                    external_request_id: request_id,
                     operation_kind: operation_kind.to_owned(),
                     operation_fingerprint: fingerprint,
+                    display_summary,
                 },
                 on_event,
             )?;
-            // Approval decisions are owned by the later approval service. The
-            // gateway declines here so a task can never execute a high-risk
-            // request merely because no decision channel is attached yet.
-            self.send(json!({"id":id,"result":{"decision":"decline"}}))?;
+            let expiry = Instant::now() + self.approval_ttl;
+            while reply.is_none() {
+                self.guard()?;
+                self.defer_while_awaiting_approval(thread_id, turn_id)?;
+                if self
+                    .child
+                    .try_wait()
+                    .map_err(|_| Failure::Disconnected)?
+                    .is_some()
+                {
+                    return Err(Failure::Disconnected);
+                }
+                if Instant::now() >= expiry {
+                    on_event(TaskEvent::ApprovalExpired).map_err(|_| Failure::Protocol)?;
+                    break;
+                }
+                reply = on_event(TaskEvent::ApprovalPoll).map_err(|_| Failure::Protocol)?;
+                if reply.is_none() {
+                    thread::sleep(Duration::from_millis(25));
+                }
+            }
+            let decision = if reply.as_ref().is_some_and(|value| value.accepted) {
+                "accept"
+            } else {
+                "decline"
+            };
+            self.defer_while_awaiting_approval(thread_id, turn_id)?;
+            self.send(json!({"id":id,"result":{"decision":decision}}))?;
+            if let Some(reply) = reply {
+                *pending_approval_ack = Some((
+                    item_id,
+                    serde_json::to_string(&id).map_err(|_| Failure::Protocol)?,
+                    reply,
+                ));
+            }
             return Ok(None);
         }
         if let Some(actual_thread) = params.get("threadId").and_then(Value::as_str) {
@@ -1389,13 +1621,55 @@ impl Candidate {
                 return Err(Failure::Protocol);
             }
         }
+        if method == "serverRequest/resolved" || method == "item/completed" {
+            if let Some((expected_item, request_id, claim)) = pending_approval_ack.as_ref() {
+                let request_matches = method == "serverRequest/resolved"
+                    && params.get("threadId").and_then(Value::as_str) == Some(thread_id)
+                    && params
+                        .get("requestId")
+                        .and_then(|value| serde_json::to_string(value).ok())
+                        .as_ref()
+                        == Some(request_id);
+                let item_matches = method == "item/completed"
+                    && params.get("threadId").and_then(Value::as_str) == Some(thread_id)
+                    && params.get("turnId").and_then(Value::as_str) == Some(turn_id)
+                    && params.pointer("/item/id").and_then(Value::as_str) == Some(expected_item);
+                if request_matches || item_matches {
+                    acc.push(
+                        TaskEvent::ApprovalAcknowledged {
+                            approval_id: claim.approval_id.clone(),
+                            consume_request_id: claim.consume_request_id.clone(),
+                        },
+                        on_event,
+                    )?;
+                    *pending_approval_ack = None;
+                }
+            }
+        }
         match method {
-            "turn/started" => acc.push(TaskEvent::Running, on_event)?,
+            "item/completed"
+                if params.pointer("/item/type").and_then(Value::as_str)
+                    == Some("commandExecution") =>
+            {
+                acc.push(
+                    TaskEvent::OperationCompleted {
+                        succeeded: params.pointer("/item/exitCode").and_then(Value::as_i64)
+                            == Some(0),
+                    },
+                    on_event,
+                )?;
+            }
+            "turn/started" => {
+                acc.push(TaskEvent::Running, on_event)?;
+            }
             "item/agentMessage/delta" => {
                 let text = params
                     .get("delta")
                     .and_then(Value::as_str)
                     .ok_or(Failure::Protocol)?;
+                if text.contains(&self.route.token) {
+                    return Err(Failure::Unsafe);
+                }
                 acc.push(
                     TaskEvent::ReplyDelta {
                         text: text.to_owned(),
@@ -1412,9 +1686,21 @@ impl Candidate {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned();
+                if text.contains(&self.route.token) {
+                    return Err(Failure::Unsafe);
+                }
                 acc.push(TaskEvent::Progress { text }, on_event)?;
             }
             "turn/completed" => {
+                if let Some((_, _, claim)) = pending_approval_ack.take() {
+                    acc.push(
+                        TaskEvent::ApprovalAbandoned {
+                            approval_id: claim.approval_id,
+                            consume_request_id: claim.consume_request_id,
+                        },
+                        on_event,
+                    )?;
+                }
                 let status = params
                     .pointer("/turn/status")
                     .and_then(Value::as_str)

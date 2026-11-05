@@ -28,6 +28,7 @@ fn main() {
             "task_cancel",
             "task_events_get",
             "approvals_get",
+            "approval_decide",
             "logs_get_status",
             "logs_clear",
             "providers_list",

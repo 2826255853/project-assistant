@@ -1,5 +1,4 @@
-//! S3-03 task and session service boundary. No IPC command is registered yet; S3-04
-//! supplies the owned-process owner after this durable admission succeeds.
+//! Durable admission, owned workers, main-window approval decisions and cancellation.
 #![allow(dead_code)]
 use crate::{
     app_state,
@@ -11,9 +10,11 @@ use crate::{
     },
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
     path::Path,
+    sync::mpsc::{self, Receiver, Sender, TryRecvError},
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -25,9 +26,17 @@ use tauri::Manager;
 #[derive(Default)]
 pub(crate) struct TaskRuntimeState {
     workers: Mutex<HashMap<String, crate::owned_process::Cancel>>,
+    approval_waiters: Mutex<HashMap<String, ApprovalWaiter>>,
+    approval_summaries: Mutex<HashMap<String, (String, String)>>,
     outputs: Mutex<HashMap<String, TaskOutput>>,
     completed: Mutex<VecDeque<String>>,
     closing: AtomicBool,
+}
+
+struct ApprovalWaiter {
+    task_id: String,
+    deadline: Instant,
+    sender: Sender<crate::owned_process::ApprovalReply>,
 }
 
 #[derive(Default)]
@@ -131,6 +140,7 @@ impl TaskRuntimeState {
         let spawned = std::thread::Builder::new()
             .name("pa-owned-task".into())
             .spawn(move || {
+                let worker_cancel = cancel.clone();
                 let result = run_admitted(
                     &app,
                     &worker_task_id,
@@ -139,7 +149,26 @@ impl TaskRuntimeState {
                     cancel,
                 );
                 if let Err(error) = &result {
-                    finish_task_failure(&app, &worker_task_id, &worker_correlation, *error);
+                    finish_task_failure(
+                        &app,
+                        &worker_task_id,
+                        &worker_correlation,
+                        if worker_cancel.is_cancelled()
+                            && !matches!(
+                                error,
+                                ErrorCode::ProcessExitFailed
+                                    | ErrorCode::AuditWriteFailed
+                                    | ErrorCode::SettingsStorageFailed
+                            )
+                        {
+                            ErrorCode::ProcessCancelled
+                        } else {
+                            *error
+                        },
+                    );
+                }
+                if let Ok(mut waiters) = app.state::<TaskRuntimeState>().approval_waiters.lock() {
+                    waiters.retain(|_, waiter| waiter.task_id != worker_task_id);
                 }
                 if let Ok(run) = &result {
                     if let Ok(mut outputs) = app.state::<TaskRuntimeState>().outputs.lock() {
@@ -159,6 +188,11 @@ impl TaskRuntimeState {
                             if let Ok(mut outputs) = app.state::<TaskRuntimeState>().outputs.lock()
                             {
                                 outputs.remove(&expired);
+                            }
+                            if let Ok(mut summaries) =
+                                app.state::<TaskRuntimeState>().approval_summaries.lock()
+                            {
+                                summaries.retain(|_, (task_id, _)| task_id != &expired);
                             }
                         }
                     }
@@ -271,6 +305,16 @@ pub struct TaskEventsRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalsRequest {
     pub task_id: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalDecideRequest {
+    pub approval_id: String,
+    pub task_id: String,
+    pub expected_revision: i64,
+    pub expected_task_revision: i64,
+    pub operation_fingerprint: String,
+    pub decision: String,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -411,6 +455,25 @@ impl TaskEventsRequest {
 impl ApprovalsRequest {
     pub(crate) fn validate(&self) -> Result<(), ErrorCode> {
         if self.task_id.is_empty() {
+            Err(ErrorCode::InvalidRequest)
+        } else {
+            Ok(())
+        }
+    }
+}
+impl ApprovalDecideRequest {
+    pub(crate) fn validate(&self) -> Result<(), ErrorCode> {
+        if self.approval_id.is_empty()
+            || self.task_id.is_empty()
+            || self.expected_revision < 1
+            || self.expected_task_revision < 1
+            || !matches!(self.decision.as_str(), "approve" | "deny")
+            || self.operation_fingerprint.len() != 64
+            || !self
+                .operation_fingerprint
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
             Err(ErrorCode::InvalidRequest)
         } else {
             Ok(())
@@ -639,20 +702,29 @@ pub(crate) fn cancel(
     request: TaskCancelRequest,
     correlation: &str,
 ) -> Result<crate::storage::tasks::CancelReceipt, ErrorCode> {
-    let receipt = app
-        .state::<StorageState>()
-        .with_storage(|storage| {
-            Ok(storage.tasks().task_cancel(
-                &request.task_id,
-                request.expected_revision,
-                correlation,
-            ))
-        })
-        .map_err(map_storage)??;
-    if receipt.accepted {
-        app.state::<TaskRuntimeState>()
-            .cancel_task(&request.task_id)?;
-    }
+    let runtime = app.state::<TaskRuntimeState>();
+    let signal = runtime
+        .workers
+        .lock()
+        .map_err(|_| ErrorCode::ProcessExitFailed)?
+        .get(&request.task_id)
+        .cloned()
+        .unwrap_or_default();
+    let receipt = signal.request_after(|| {
+        let receipt = app
+            .state::<StorageState>()
+            .with_storage(|storage| {
+                Ok(storage.tasks().task_cancel(
+                    &request.task_id,
+                    request.expected_revision,
+                    correlation,
+                ))
+            })
+            .map_err(map_storage)??;
+        let accepted = receipt.accepted;
+        Ok((receipt, accepted))
+    })?;
+    app_state::publish(app, correlation.to_owned());
     Ok(receipt)
 }
 pub(crate) fn events(
@@ -673,11 +745,95 @@ pub(crate) fn approvals(
     app: &tauri::AppHandle,
     request: ApprovalsRequest,
 ) -> Result<ApprovalPage, ErrorCode> {
-    let items = app
+    let mut items = app
         .state::<StorageState>()
         .with_storage(|storage| Ok(storage.tasks().approvals_get(&request.task_id)))
         .map_err(map_storage)??;
+    let runtime = app.state::<TaskRuntimeState>();
+    let summaries = runtime
+        .approval_summaries
+        .lock()
+        .map_err(|_| ErrorCode::ProcessExitFailed)?;
+    for item in &mut items {
+        if let Some((_, summary)) = summaries.get(&item.id) {
+            item.display_summary = summary.clone();
+        }
+    }
     Ok(ApprovalPage { items })
+}
+
+pub(crate) fn approval_decide(
+    app: &tauri::AppHandle,
+    request: ApprovalDecideRequest,
+    correlation: &str,
+) -> Result<ApprovalReceipt, ErrorCode> {
+    let runtime = app.state::<TaskRuntimeState>();
+    let waiters = runtime
+        .approval_waiters
+        .lock()
+        .map_err(|_| ErrorCode::ProcessExitFailed)?;
+    let waiter = waiters
+        .get(&request.approval_id)
+        .ok_or(ErrorCode::ApprovalNotPending)?;
+    if waiter.task_id != request.task_id {
+        return Err(ErrorCode::PermissionDenied);
+    }
+    if Instant::now() >= waiter.deadline {
+        return Err(ErrorCode::ApprovalExpired);
+    }
+    let sender = waiter.sender.clone();
+    let decision = if request.decision == "approve" {
+        crate::storage::tasks::ApprovalDecisionInput::Approve
+    } else {
+        crate::storage::tasks::ApprovalDecisionInput::Deny
+    };
+    let mut receipt = app
+        .state::<StorageState>()
+        .with_storage(|storage| {
+            Ok(storage.tasks().approval_decide(
+                &request.task_id,
+                &request.approval_id,
+                request.expected_revision,
+                request.expected_task_revision,
+                &request.operation_fingerprint,
+                "main",
+                decision,
+                correlation,
+            ))
+        })
+        .map_err(map_storage)??;
+    drop(waiters);
+    if let Some((_, summary)) = runtime
+        .approval_summaries
+        .lock()
+        .map_err(|_| ErrorCode::ProcessExitFailed)?
+        .get(&receipt.approval.id)
+    {
+        receipt.approval.display_summary = summary.clone();
+    }
+    let consume_request_id = receipt
+        .approval
+        .consume_request_id
+        .clone()
+        .ok_or(ErrorCode::TaskConflictRevision)?;
+    let reply = crate::owned_process::ApprovalReply {
+        approval_id: receipt.approval.id.clone(),
+        consume_request_id,
+        accepted: decision == crate::storage::tasks::ApprovalDecisionInput::Approve,
+    };
+    if sender.send(reply.clone()).is_err() {
+        let _ = app.state::<StorageState>().with_storage(|storage| {
+            Ok(storage.tasks().approval_acknowledge(
+                &receipt.approval.id,
+                &reply.consume_request_id,
+                false,
+                correlation,
+            ))
+        });
+        return Err(ErrorCode::TaskConflictRevision);
+    }
+    app_state::publish(app, correlation.to_owned());
+    Ok(receipt)
 }
 
 pub(crate) fn transition(
@@ -709,8 +865,7 @@ pub(crate) fn approval_create(
 }
 
 /// Start an admitted task in the application-owned Codex process. This is an
-/// internal service boundary for S3-04; IPC registration remains a later step
-/// so the UI cannot bypass the admission and event journal.
+/// internal service boundary: UI commands cannot bypass admission and the journal.
 pub(crate) fn run_admitted(
     app: &tauri::AppHandle,
     task_id: &str,
@@ -726,7 +881,13 @@ pub(crate) fn run_admitted(
     if owned_state.is_blocked() {
         return Err(ErrorCode::ProcessExitFailed);
     }
-    let _serial_guard = owned_state.lock_serial()?;
+    let _serial_guard = owned_state.lock_serial_cancellable(&cancel)?;
+    if owned_state.is_blocked() {
+        return Err(ErrorCode::ProcessExitFailed);
+    }
+    if cancel.is_cancelled() {
+        return Err(ErrorCode::ProcessCancelled);
+    }
     crate::providers::config_state(app)?;
     let credentials = app.state::<CredentialsState>();
     if !credentials.health() {
@@ -793,8 +954,12 @@ pub(crate) fn run_admitted(
     let mut content_revision = launch.task.content_revision;
     let mut last_content_event = Instant::now() - Duration::from_secs(1);
     let mut dirty_channels = Vec::<&'static str>::new();
+    let mut pending_approval: Option<(
+        crate::storage::tasks::ApprovalRecord,
+        Receiver<crate::owned_process::ApprovalReply>,
+    )> = None;
     let cancel_signal = cancel.clone();
-    let mut on_event = |event: crate::owned_process::TaskEvent| -> Result<(), ErrorCode> {
+    let mut on_event = |event: crate::owned_process::TaskEvent| -> Result<Option<crate::owned_process::ApprovalReply>, ErrorCode> {
         match event {
             crate::owned_process::TaskEvent::Started {
                 external_session_id,
@@ -871,10 +1036,22 @@ pub(crate) fn run_admitted(
                 }
             }
             crate::owned_process::TaskEvent::ApprovalRequired {
+                item_id: _,
                 external_request_id,
                 operation_kind,
                 operation_fingerprint,
+                display_summary,
             } => {
+                let mut binding = Sha256::new();
+                binding.update(b"project-assistant-approval-v1\0");
+                binding.update(operation_fingerprint.as_bytes());
+                binding.update([0]);
+                binding.update(task_id.as_bytes());
+                binding.update([0]);
+                binding.update(launch.task.session_id.as_bytes());
+                binding.update([0]);
+                binding.update(launch.project_identity_value().as_bytes());
+                let operation_fingerprint = format!("{:x}", binding.finalize());
                 let approval = app
                     .state::<StorageState>()
                     .with_storage(|storage| {
@@ -893,24 +1070,81 @@ pub(crate) fn run_admitted(
                     .map_err(map_storage)??;
                 let waiting = app
                     .state::<StorageState>()
-                    .with_storage(|storage| Ok(storage.tasks().task_get(task_id)))
+                    .with_storage(|storage| Ok(storage.tasks().task_get_internal(task_id)))
                     .map_err(map_storage)??;
                 task_revision = waiting.revision;
                 task_status = waiting.status;
-                let denied = app
-                    .state::<StorageState>()
-                    .with_storage(|storage| {
-                        Ok(storage.tasks().approval_deny_by_default(
-                            task_id,
-                            &approval.approval.id,
-                            task_revision,
-                            correlation,
-                        ))
-                    })
-                    .map_err(map_storage)??;
-                task_revision = denied.revision;
-                task_status = denied.status;
+                app.state::<TaskRuntimeState>().approval_summaries.lock()
+                    .map_err(|_| ErrorCode::ProcessExitFailed)?
+                    .insert(approval.approval.id.clone(), (task_id.to_owned(), display_summary));
+                if approval.approval.operation_kind == "unknown" {
+                    let denied = app.state::<StorageState>().with_storage(|storage| Ok(storage.tasks().approval_decide(
+                        task_id, &approval.approval.id, approval.approval.revision, task_revision,
+                        &approval.approval.operation_fingerprint, "main", crate::storage::tasks::ApprovalDecisionInput::Deny, correlation,
+                    ))).map_err(map_storage)??;
+                    let current = app.state::<StorageState>().with_storage(|storage| Ok(storage.tasks().task_get_internal(task_id))).map_err(map_storage)??;
+                    task_revision = current.revision;
+                    task_status = current.status;
+                    return Ok(Some(crate::owned_process::ApprovalReply {
+                        approval_id: denied.approval.id, consume_request_id: denied.approval.consume_request_id.ok_or(ErrorCode::ApprovalNotPending)?, accepted: false,
+                    }));
+                }
+                let (sender, receiver) = mpsc::channel();
+                app.state::<TaskRuntimeState>().approval_waiters.lock()
+                    .map_err(|_| ErrorCode::ProcessExitFailed)?
+                    .insert(approval.approval.id.clone(), ApprovalWaiter {
+                        task_id: task_id.to_owned(), deadline: Instant::now() + Duration::from_secs(5 * 60), sender,
+                    });
+                pending_approval = Some((approval.approval, receiver));
                 app_state::publish(app, correlation.to_owned());
+            }
+            crate::owned_process::TaskEvent::ApprovalPoll => {
+                let (approval, receiver) = pending_approval.as_ref().ok_or(ErrorCode::ApprovalNotPending)?;
+                if crate::providers::now()? >= approval.expires_at {
+                    app.state::<StorageState>().with_storage(|storage| Ok(storage.tasks().approval_expire(task_id, &approval.id, correlation))).map_err(map_storage)??;
+                    return Err(ErrorCode::ApprovalExpired);
+                }
+                match receiver.try_recv() {
+                    Ok(reply) => {
+                        let current = app.state::<StorageState>().with_storage(|storage| {
+                            Ok(storage.tasks().approval_verify_claim(task_id, &reply.approval_id, &reply.consume_request_id, correlation))
+                        }).map_err(map_storage)??;
+                        task_revision = current.revision;
+                        task_status = current.status;
+                        app.state::<TaskRuntimeState>().approval_waiters.lock()
+                            .map_err(|_| ErrorCode::ProcessExitFailed)?.remove(&approval.id);
+                        pending_approval = None;
+                        return Ok(Some(reply));
+                    }
+                    Err(TryRecvError::Empty) => {},
+                    Err(TryRecvError::Disconnected) => return Err(ErrorCode::ApprovalNotPending),
+                }
+            }
+            crate::owned_process::TaskEvent::ApprovalExpired => {
+                let (approval, _) = pending_approval.take().ok_or(ErrorCode::ApprovalNotPending)?;
+                app.state::<TaskRuntimeState>().approval_waiters.lock()
+                    .map_err(|_| ErrorCode::ProcessExitFailed)?.remove(&approval.id);
+                app.state::<StorageState>().with_storage(|storage| Ok(storage.tasks().approval_expire(
+                    task_id, &approval.id, correlation,
+                ))).map_err(map_storage)??;
+                let current = app.state::<StorageState>().with_storage(|storage| Ok(storage.tasks().task_get_internal(task_id))).map_err(map_storage)??;
+                task_revision = current.revision;
+                task_status = current.status;
+                app_state::publish(app, correlation.to_owned());
+            }
+            crate::owned_process::TaskEvent::ApprovalAcknowledged { approval_id, consume_request_id } => {
+                app.state::<StorageState>().with_storage(|storage| Ok(storage.tasks().approval_acknowledge(
+                    &approval_id, &consume_request_id, true, correlation,
+                ))).map_err(map_storage)??;
+                app_state::publish(app, correlation.to_owned());
+            }
+            crate::owned_process::TaskEvent::OperationCompleted { .. } => {}
+            crate::owned_process::TaskEvent::ApprovalAbandoned { approval_id, consume_request_id } => {
+                app.state::<StorageState>().with_storage(|storage| Ok(storage.tasks().approval_acknowledge(
+                    &approval_id, &consume_request_id, false, correlation,
+                ))).map_err(map_storage)??;
+                app_state::publish(app, correlation.to_owned());
+                return Err(ErrorCode::ApprovalUncertain);
             }
             crate::owned_process::TaskEvent::Completed
             | crate::owned_process::TaskEvent::Cancelled
@@ -926,7 +1160,7 @@ pub(crate) fn run_admitted(
                 last_content_event = Instant::now();
             }
         }
-        Ok(())
+        Ok(None)
     };
     let result = crate::owned_process::run_task(
         &root,
@@ -959,7 +1193,7 @@ pub(crate) fn run_admitted(
             let error = (terminal == "failed").then_some("PA_TASK_PROTOCOL_INVALID");
             let current = app
                 .state::<StorageState>()
-                .with_storage(|storage| Ok(storage.tasks().task_get(task_id)))
+                .with_storage(|storage| Ok(storage.tasks().task_get_internal(task_id)))
                 .map_err(map_storage)??;
             if matches!(
                 current.status.as_str(),
@@ -1004,9 +1238,16 @@ pub(crate) fn run_admitted(
             }
             let current = app
                 .state::<StorageState>()
-                .with_storage(|storage| Ok(storage.tasks().task_get(task_id)))
+                .with_storage(|storage| Ok(storage.tasks().task_get_internal(task_id)))
                 .map_err(map_storage)??;
-            if *error == ErrorCode::ProcessCancelled || cancel_signal.is_cancelled() {
+            if (*error == ErrorCode::ProcessCancelled || cancel_signal.is_cancelled())
+                && !matches!(
+                    error,
+                    ErrorCode::ProcessExitFailed
+                        | ErrorCode::AuditWriteFailed
+                        | ErrorCode::SettingsStorageFailed
+                )
+            {
                 let mut current_revision = current.revision;
                 if current.status != "cancelling" {
                     let cancelling = app
@@ -1039,12 +1280,14 @@ pub(crate) fn run_admitted(
                 return result;
             }
             let code = match error {
+                ErrorCode::ApprovalUncertain => "PA_APPROVAL_UNCERTAIN",
+                ErrorCode::ApprovalExpired => "PA_APPROVAL_EXPIRED",
                 ErrorCode::CodexRequestTimeout => "PA_CODEX_REQUEST_TIMEOUT",
                 ErrorCode::CodexDisconnected => "PA_CODEX_DISCONNECTED",
                 ErrorCode::ProcessCancelled => "PA_TASK_RECOVERY_BLOCKED",
                 ErrorCode::ProcessExitFailed => "PA_PROCESS_EXIT_FAILED",
                 ErrorCode::ProviderSharedRouteUnsafe => "PA_TASK_RECOVERY_BLOCKED",
-                ErrorCode::InputTooLarge => "PA_TASK_LIMIT_EXCEEDED",
+                ErrorCode::InputTooLarge | ErrorCode::TaskLimitExceeded => "PA_TASK_LIMIT_EXCEEDED",
                 ErrorCode::CodexVersionUnsupported | ErrorCode::ProviderTestFailed => {
                     "PA_TASK_PROTOCOL_INVALID"
                 }
@@ -1085,7 +1328,7 @@ fn finish_task_failure(app: &tauri::AppHandle, task_id: &str, correlation: &str,
     }
     let Ok(Ok(current)) = app
         .state::<StorageState>()
-        .with_storage(|storage| Ok(storage.tasks().task_get(task_id)))
+        .with_storage(|storage| Ok(storage.tasks().task_get_internal(task_id)))
         .map_err(map_storage)
     else {
         return;
@@ -1100,7 +1343,15 @@ fn finish_task_failure(app: &tauri::AppHandle, task_id: &str, correlation: &str,
         app.state::<crate::owned_process::OwnedProcessState>()
             .block();
     }
-    if error == ErrorCode::ProcessCancelled {
+    if error == ErrorCode::ProcessCancelled
+        || (current.status == "cancelling"
+            && !matches!(
+                error,
+                ErrorCode::ProcessExitFailed
+                    | ErrorCode::AuditWriteFailed
+                    | ErrorCode::SettingsStorageFailed
+            ))
+    {
         let mut revision = current.revision;
         if current.status != "cancelling" {
             let Ok(Ok(cancelling)) = app
@@ -1129,6 +1380,8 @@ fn finish_task_failure(app: &tauri::AppHandle, task_id: &str, correlation: &str,
         return;
     }
     let code = match error {
+        ErrorCode::ApprovalUncertain => "PA_APPROVAL_UNCERTAIN",
+        ErrorCode::ApprovalExpired => "PA_APPROVAL_EXPIRED",
         ErrorCode::CodexNotInstalled => "PA_CODEX_NOT_INSTALLED",
         ErrorCode::CodexRequestTimeout => "PA_CODEX_REQUEST_TIMEOUT",
         ErrorCode::CodexDisconnected => "PA_CODEX_DISCONNECTED",
@@ -1141,7 +1394,7 @@ fn finish_task_failure(app: &tauri::AppHandle, task_id: &str, correlation: &str,
         ErrorCode::ProjectPathUnavailable => "PA_PROJECT_PATH_UNAVAILABLE",
         ErrorCode::SettingsStorageFailed => "PA_SETTINGS_STORAGE_FAILED",
         ErrorCode::AuditWriteFailed => "PA_AUDIT_WRITE_FAILED",
-        ErrorCode::InputTooLarge => "PA_TASK_LIMIT_EXCEEDED",
+        ErrorCode::InputTooLarge | ErrorCode::TaskLimitExceeded => "PA_TASK_LIMIT_EXCEEDED",
         ErrorCode::ProviderSharedRouteUnsafe | ErrorCode::ProviderRollbackFailed => {
             "PA_TASK_RECOVERY_BLOCKED"
         }
@@ -1207,5 +1460,43 @@ mod tests {
             "expectedProjectRevision":1,"expectedSessionRevision":1,"expectedProjectSettingsRevision":1,"expectedGlobalRevision":1,"selection":null,"prompt":"hello"
         });
         assert!(serde_json::from_value::<TaskStartRequest>(null_selection).is_ok());
+    }
+
+    #[test]
+    fn approval_request_cannot_supply_window_summary_operation_or_execution_arguments() {
+        let request = serde_json::json!({"approvalId":"a","taskId":"t","expectedRevision":1,"expectedTaskRevision":3,"operationFingerprint":"f".repeat(64),"decision":"approve"});
+        assert!(
+            serde_json::from_value::<ApprovalDecideRequest>(request.clone())
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+        for key in [
+            "windowLabel",
+            "displaySummary",
+            "command",
+            "consumeRequestId",
+            "cwd",
+        ] {
+            let mut changed = request.clone();
+            changed[key] = serde_json::json!("synthetic-private-value");
+            assert!(serde_json::from_value::<ApprovalDecideRequest>(changed).is_err());
+        }
+        let mut missing_revision = request.clone();
+        missing_revision
+            .as_object_mut()
+            .unwrap()
+            .remove("expectedTaskRevision");
+        assert!(serde_json::from_value::<ApprovalDecideRequest>(missing_revision).is_err());
+        for decision in ["acceptForSession", "acceptWithExecpolicyAmendment", "allow"] {
+            let mut changed = request.clone();
+            changed["decision"] = serde_json::json!(decision);
+            assert!(
+                serde_json::from_value::<ApprovalDecideRequest>(changed)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
     }
 }

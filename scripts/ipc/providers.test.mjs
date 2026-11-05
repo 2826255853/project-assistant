@@ -32,5 +32,6 @@ test("all nine provider commands have explicit main-only permissions",async()=>{
  const lib=await readFile(new URL("../../src-tauri/src/lib.rs",import.meta.url),"utf8");
  for(const n of names){assert.ok(main.permissions.includes("allow-"+n.replaceAll("_","-")));assert.ok(!overlay.permissions.includes("allow-"+n.replaceAll("_","-")));assert.match(lib,new RegExp("async fn "+n));}
  assert.ok(!overlay.permissions.some(p=>/^allow-(session|task|approvals)/.test(p)));
- assert.ok(!main.permissions.includes("allow-approval-decide"));
+ assert.ok(main.permissions.includes("allow-approval-decide"));
+ assert.ok(!overlay.permissions.includes("allow-approval-decide"));
 });

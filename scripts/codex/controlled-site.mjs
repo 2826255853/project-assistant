@@ -22,6 +22,7 @@ export async function controlledSite(label, key, {tls} = {}) {
     requests.push({ method: request.method, path: request.url?.split("?")[0], keyMatches,
       credentialPresent: Boolean(request.headers.authorization), model: payload.model,
       effort: payload.reasoning?.effort,
+      toolNames: (payload.tools ?? []).map(tool => tool.name).filter(Boolean),
       containsTaskPrompt: JSON.stringify(payload).includes("S3_04_PROMPT_SENTINEL") });
     if (mode === "redirect") { response.writeHead(307, { location: redirect }).end(); return; }
     if (!keyMatches || mode === "unauthorized" || mode === "echo-secret-error") {
@@ -39,6 +40,17 @@ export async function controlledSite(label, key, {tls} = {}) {
     let sequence = 0;
     const event = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...data })}\n\n`);
     event("response.created", { response: base });
+    if (mode === "approval" && !JSON.stringify(payload.input).includes("function_call_output")) {
+      const args = JSON.stringify({cmd: "Get-Location", workdir: redirect, sandbox_permissions: "require_escalated", justification: "Synthetic print-only approval acceptance."});
+      const call = {id: `fc_${randomUUID()}`, type: "function_call", call_id: `call_${randomUUID()}`, name: "exec_command", arguments: args, status: "completed"};
+      event("response.output_item.added", {output_index: 0, item: {...call, arguments: "", status: "in_progress"}});
+      event("response.function_call_arguments.delta", {output_index: 0, item_id: call.id, delta: args});
+      event("response.function_call_arguments.done", {output_index: 0, item_id: call.id, arguments: args});
+      event("response.output_item.done", {output_index: 0, item: call});
+      event("response.completed", {response: {...base, status: "completed", output: [call]}});
+      response.end();
+      return;
+    }
     event("response.output_item.added", { output_index: 0, item });
     event("response.content_part.added", { item_id: itemId, output_index: 0, content_index: 0,
       part: { type: "output_text", text: "", annotations: [] } });

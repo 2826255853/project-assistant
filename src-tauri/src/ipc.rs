@@ -126,6 +126,14 @@ pub enum ErrorCode {
     TaskNotFound,
     #[serde(rename = "PA_TASK_CONFLICT_REVISION")]
     TaskConflictRevision,
+    #[serde(rename = "PA_APPROVAL_NOT_PENDING")]
+    ApprovalNotPending,
+    #[serde(rename = "PA_APPROVAL_EXPIRED")]
+    ApprovalExpired,
+    #[serde(rename = "PA_APPROVAL_BINDING_MISMATCH")]
+    ApprovalBindingMismatch,
+    #[serde(rename = "PA_APPROVAL_UNCERTAIN")]
+    ApprovalUncertain,
     #[serde(rename = "PA_TASK_QUEUE_FULL")]
     TaskQueueFull,
     #[serde(rename = "PA_TASK_PROTOCOL_INVALID")]
@@ -404,6 +412,26 @@ impl ErrorCode {
                 ErrorCategory::Conflict,
                 "任务或会话状态已变化。",
                 "请重新读取权威状态后再操作。",
+            ),
+            Self::ApprovalNotPending => (
+                ErrorCategory::Conflict,
+                "审批已决定或当前不可决策。",
+                "请重新查询审批和任务状态；不会重发决定。",
+            ),
+            Self::ApprovalExpired => (
+                ErrorCategory::Conflict,
+                "审批已过期，操作未获授权。",
+                "请重新查询任务状态；旧审批不能再次使用。",
+            ),
+            Self::ApprovalBindingMismatch => (
+                ErrorCategory::Permission,
+                "审批与任务、窗口或操作不匹配。",
+                "请从主窗口重新读取本任务的审批。",
+            ),
+            Self::ApprovalUncertain => (
+                ErrorCategory::Conflict,
+                "审批决定的消费结果未确认，任务已停止。",
+                "请检查任务结果后手动发起新任务；决定不会重发。",
             ),
             Self::TaskQueueFull => (
                 ErrorCategory::Conflict,

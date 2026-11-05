@@ -18,7 +18,9 @@
 - 步骤 2.5（S2-05）于 2026-10-28 有条件通过：新增 main-only `project_open_directory/project_open_file/project_pick_file`，默认程序/结构化编辑器真实交付、相对文件结果接受边界、固定失败和无自动重试。最终目标通过只回滚的 NTFS/TxF 元数据保护，补上属性句柄可绕过普通共享锁原地设置重解析点的漏洞；保护不可用、ReFS、属性写权限不足等拒绝打开，不降级。`verify:projects` 最新为 `artifacts/phase-2-5/report.json`，151 Rust、33 IPC、15 离线、52 存储及 built/dev 通过。目录/中文文本与真实合成 PE 编辑器均验证系统接受，未声明外部加载完成；ReFS 打开未实测，原生选择器人工点验仍在 2.9。实现与平台限制见 `docs/phase-2/step-2.5.md`，后续为 2.6 Git；M2 未通过。上面 2.3/2.4 的报告及待验说明保留当轮历史范围。
 - 步骤 2.9（S2-09）于 2026-10-30 完成自动回归与阶段 3 移交范围：`npm run verify:projects` 已统一执行前端/Rust/IPC/存储、项目 built/dev 桌面闭环及设置、日志、凭据、隔离、provider 回归，最新 `artifacts/phase-2/report.json` 为通过（159 Rust、5 个阶段 1 回归、4 项人工边界）。原生选择器物理点验、真实中文 IME、外部程序完成加载、阶段 1 托盘/多显示器/DPI 和其他平台仍需人工或平台复核；阶段 2/M2 未因自动报告整体通过而关闭。
 
-阶段 3 步骤 3.1（S3-01）于 2026-11-02 完成未来任务/会话/审批契约、状态机、权限与功能门，详见 `docs/phase-3/step-3.1.md`。当前仅扩展未实现 DTO，并通过静态断言确认任务命令未进入调用器、Rust 注册或 capability；`npm run build` 与 `npm run test:ipc`（36/36）通过。未实现任务运行时、迁移、网关或 M3；不得将契约完成视为真实任务可用。
+阶段 3 步骤 3.1（S3-01）于 2026-11-02 完成任务/会话/审批契约与功能门；当轮仅为 DTO/未开放断言，36 IPC 通过，不能据此宣称真实任务。3.2 项目 AI 默认、3.3 schema v7 仓储/恢复和 3.4 自有任务网关已随后实现，各自边界见 `docs/phase-3/step-3.2.md` 至 `step-3.4.md`。
+
+步骤 3.5（S3-05）于 2026-11-05 通过单次命令审批/取消服务及自动验收：main-only `approval_decide`、原子决定/claim/事件/审计、CLI 消费确认、取消发送锁、可取消排队和失败/重启失效已接入。`npm run verify:approvals` 最新报告 `artifacts/phase-3-5/report.json` 为通过：186 Rust、38 IPC、15 离线、6 个真实 CLI/合成 HTTPS 场景；网关回归、隔离路由子集和 built 构建通过。CLI 0.166.0-alpha.6；适配器 `owned-stdio-relay-v2` 使旧能力/连接证据失效，需要重新核验。当前 fileChange grantRoot 没有完整绑定补丁，按 unknown 拒绝；摘要仅进程内缓存、不开启采集。schema 仍为 v7，无历史迁移改写。主窗口任务/审批控件、内容/差异正文、overlay 和运行中切换/阶段回归仍待 3.6–3.9，M3 未通过；详情 `docs/phase-3/step-3.5.md`。
 
 优先阅读 `README.md`、`计划文档.txt` 第 21/22 节、`docs/phase-2/step-2.5.md`、`docs/phase-2/step-2.4.md`、`docs/phase-2/step-2.3.md`、`docs/phase-2/step-2.1.md`、`docs/phase-1/step-1.7.md` 和 `step-1.4.md`。旧阶段文档描述的是当时状态，例如早期“设置/业务数据库未接入”已被 1.3/1.4 取代；结合最新记录和源码判断。
 
@@ -39,6 +41,7 @@
 - `src/ipc/contracts.ts`：DTO；`client.ts`：集中调用入口；`response.ts`、`settings.ts`、`state.ts`：运行时返回校验和状态恢复；`transport.ts`：超时/停止等待。`CommandMap` 含未来接口，**实际可调用范围看 `ImplementedCommandMap` 和 Rust 注册表**。
 - `src/ipc/projects.ts`、`src-tauri/src/project_contract.rs`：项目 DTO 与校验；2.3 登记/详情/移除、2.4 列表搜索和 2.5 目录/文件打开/文件选择已接入 client、Rust 注册和 main capability，完整项目服务状态仍待后续。`src/ipc/projectSearch.ts` 为分页/响应代次/IME 控制器，`storage/projects/search.rs` 为元数据搜索、稳定排序和指纹游标。`src-tauri/src/project_paths.rs` 与 `project_paths/windows.rs`：2.2 Windows 选择器、路径核验与身份句柄；`project_paths/windows/delivery.rs`：2.5 名称句柄与只回滚 NTFS 元数据保护、默认程序/编辑器交付与受限文件结果；`storage/projects.rs` 为持久仓储/使用事务及启动复核，`projects.rs` 为服务入口。
 - `src-tauri/src/lib.rs`：命令封装、启动顺序、状态注入、窗口生命周期和命令注册；`desktop.rs`：初始化模式；`app_state.rs`：权威状态与事件游标。
+- `src-tauri/src/tasks.rs`、`storage/tasks.rs`：会话/任务仓储、原子准入、运行 worker、审批等待/决定/消费确认与取消；`src/ipc/taskContracts.ts` 为 DTO/返回校验。`approval_decide` 仅 main，内容/差异正文和 overlay 任务命令仍保持关闭。
 - `src-tauri/src/settings.rs`：设置 DTO、校验、运行状态应用/回滚和统一更新；`overlay.rs`：托盘、快捷键、位置、显示器校正与窗口操作。
 - `src-tauri/src/storage/mod.rs`：连接保护、迁移/备份、启动恢复及 StorageState；`repositories.rs`：类型化仓储；`storage/settings.rs`：设置事务、修订与旧 JSON 一次迁移。
 - `src-tauri/src/owned_process/`：1.7 正式自有候选进程、配置/来源核验、固定上游转发、当前用户 DACL、Windows Job 与自有 home 清理；Rust 内部 `probe_candidate` 留给 1.8 使用，未新增业务 IPC。`verify:isolation` 为实际 CLI/合成 HTTPS 验收；生产不允许用环境变量开启 loopback/自签 CA。
@@ -53,7 +56,7 @@
 - 事件频道 `project-assistant://event/v1`，以 streamId/sequence 跟踪无载荷状态失效通知；先监听后查询，缺口/重建后查询权威快照。超时/停止等待不代表服务端取消，变更请求不得自动重发。
 - 设置 `expectedRevision` 是整个全局批次的修订号。非法值、冲突、SQL 或快捷键失败拒绝整批并保持/恢复旧状态；冲突必须重读后由用户重新提交。当前项目范围不授权，非空 AI 默认仅由 provider_switch 验证提交，settings_update 只允许显式清空，审批策略只接受 ask。
 - 常驻入口首次默认启用，快捷键 Ctrl+Alt+Space；主窗口 X 在常驻启用时隐藏，停用时退出；明确“退出应用”始终退出。停用状态重启保持停用，启用后重启显示收起悬浮球。
-- 数据库位于 Tauri `app_data_dir` 下的 `project-assistant.sqlite3`，当前 schema v5（1.6 追加凭据状态/审计，1.8 追加默认修订/操作/受限状态，2.3 追加项目授权身份/修订/失效/移除与审计类型）。**已有迁移 SQL 与校验和不可改写，只追加新版本**。升级先做 SQLite 一致性备份；损坏/高版本/迁移失败保留原库，不删除重建、不自动降级、不重放任务/审批。
+- 数据库位于 Tauri `app_data_dir` 下的 `project-assistant.sqlite3`，当前 schema v7（v5 项目授权身份/修订/审计、v6 项目 AI 默认修订、v7 会话/任务/审批修订与绑定、消费及事件日志）。**已有迁移 SQL 与校验和不可改写，只追加新版本**。升级先做 SQLite 一致性备份；损坏/高版本/迁移失败保留原库，不删除重建、不自动降级、不重放任务/审批。
 - 产品持久日志与设置审计已在 1.5 接入。其规范见 `docs/phase-0/errors-and-logging.md`：JSONL 白名单、单行 4 KiB、单文件 5 MiB、最多 5 文件/7 天/25 MiB；审计默认 90 天，配置变更与审计同事务，高风险审计失败拒绝执行。清理核验应用目录身份并拒绝联接/符号链接越界；审批决定/消费的完整原子性仍待阶段 3。
 - 开发与验收只声明实际验证范围。历史报告、合成测试、当前实现与人工待验应分别说明；不要把阶段 0 实验通过写成生产能力通过。
 
@@ -79,6 +82,8 @@ npm run verify:projects
 npm run verify:credentials
 npm run verify:isolation
 npm run verify:providers
+npm run verify:task-gateway
+npm run verify:approvals
 ```
 
 `npm run dev` 只运行浏览器前端，没有真实 Tauri IPC；开发端口固定 1420。完整桌面验证支持 dev/built 两种资源模式，会启动真实窗口；执行前按 README 释放相关端口/窗口。`test:codex` 为离线测试；`verify:codex` 会调用真实服务并产生模型用量，不是普通离线回归。

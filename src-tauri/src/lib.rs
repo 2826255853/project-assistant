@@ -475,6 +475,21 @@ fn approvals_get(
 }
 
 #[tauri::command]
+fn approval_decide(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::ApprovalReceipt> {
+    let id = ipc::correlation_id();
+    let result =
+        task_request::<tasks::ApprovalDecideRequest>(&window, request, 8192).and_then(|p| {
+            p.validate()?;
+            tasks::approval_decide(&app, p, &id)
+        });
+    complete(&app, "approval_decide", id, result)
+}
+
+#[tauri::command]
 async fn providers_list(
     request: serde_json::Value,
     app: tauri::AppHandle,
@@ -1304,6 +1319,7 @@ pub fn run() {
             task_cancel,
             task_events_get,
             approvals_get,
+            approval_decide,
             desktop_initialize,
             app_get_status,
             settings_get,

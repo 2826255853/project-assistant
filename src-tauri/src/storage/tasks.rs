@@ -105,6 +105,8 @@ pub struct ApprovalRecord {
     pub decided_at: Option<i64>,
     #[serde(skip)]
     pub(crate) window_label: Option<String>,
+    #[serde(skip)]
+    pub(crate) consume_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -122,6 +124,12 @@ pub struct ApprovalRequestInput {
     pub operation_kind: String,
     pub operation_fingerprint: String,
     pub window_label: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecisionInput {
+    Approve,
+    Deny,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -534,6 +542,10 @@ impl<'a> TaskRepository<'a> {
         Ok(task)
     }
 
+    pub(crate) fn task_get_internal(&mut self, id: &str) -> Result<TaskRecord, ErrorCode> {
+        task_get(self.connection, id)?.ok_or(ErrorCode::TaskNotFound)
+    }
+
     pub(crate) fn task_launch(&mut self, id: &str) -> Result<TaskLaunchRecord, ErrorCode> {
         let task = self.task_get(id)?;
         if !matches!(task.status.as_str(), "preparing" | "running") {
@@ -694,16 +706,28 @@ impl<'a> TaskRepository<'a> {
         Ok(result)
     }
 
-    /// Until the approval-decision service is available, every external
-    /// high-risk request is recorded and denied atomically before the gateway
-    /// sends the denial back to the owned CLI.
-    pub(crate) fn approval_deny_by_default(
+    /// Persist the user decision, audit fact, and one-time gateway claim as a
+    /// single transaction. The caller must deliver the claim to this task's
+    /// owned worker; it must never reconstruct or resend it after a restart.
+    pub fn approval_decide(
         &mut self,
         task_id: &str,
         approval_id: &str,
+        expected_approval_revision: i64,
         expected_task_revision: i64,
+        operation_fingerprint: &str,
+        window_label: &str,
+        decision: ApprovalDecisionInput,
         correlation: &str,
-    ) -> Result<TaskRecord, ErrorCode> {
+    ) -> Result<ApprovalReceipt, ErrorCode> {
+        if window_label != "main"
+            || operation_fingerprint.len() != 64
+            || !operation_fingerprint
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(ErrorCode::InvalidRequest);
+        }
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -714,8 +738,26 @@ impl<'a> TaskRepository<'a> {
             return Err(ErrorCode::TaskConflictRevision);
         }
         let approval = approval_by_id(&tx, approval_id)?.ok_or(ErrorCode::InvalidRequest)?;
-        if approval.task_id != task_id || approval.decision != "pending" {
-            return Err(ErrorCode::InvalidRequest);
+        if approval.task_id != task_id
+            || approval.operation_fingerprint != operation_fingerprint
+            || approval.window_label.as_deref() != Some(window_label)
+        {
+            return Err(ErrorCode::ApprovalBindingMismatch);
+        }
+        if approval.decision != "pending"
+            || approval.consumption != "unconsumed"
+            || approval.revision != expected_approval_revision
+        {
+            return Err(ErrorCode::ApprovalNotPending);
+        }
+        let at = now()?;
+        if at >= approval.expires_at {
+            expire_approval_tx(&tx, &approval, &current.project_id, correlation, at)?;
+            tx.commit().map_err(sql)?;
+            return Err(ErrorCode::ApprovalExpired);
+        }
+        if decision == ApprovalDecisionInput::Approve && approval.operation_kind == "unknown" {
+            return Err(ErrorCode::ApprovalBindingMismatch);
         }
         let task_revision = expected_task_revision
             .checked_add(1)
@@ -726,10 +768,14 @@ impl<'a> TaskRepository<'a> {
             .checked_add(1)
             .filter(|value| *value <= MAX_SAFE)
             .ok_or(ErrorCode::TaskConflictRevision)?;
-        let at = now()?;
+        let approval_decision = match decision {
+            ApprovalDecisionInput::Approve => "approved",
+            ApprovalDecisionInput::Deny => "denied",
+        };
+        let consume_request_id = providers::uuid()?;
         tx.execute(
-            "UPDATE approvals SET decision='denied',decided_at=?1,revision=?2 WHERE id=?3 AND decision='pending' AND revision=?4",
-            params![at, approval_revision, approval_id, approval.revision],
+            "UPDATE approvals SET decision=?1,decided_at=?2,revision=?3,consumption='claimed',consume_request_id=?4 WHERE id=?5 AND decision='pending' AND consumption='unconsumed' AND revision=?6 AND expires_at>?2",
+            params![approval_decision, at, approval_revision, consume_request_id, approval_id, approval.revision],
         )
         .map_err(sql)?;
         tx.execute(
@@ -749,18 +795,138 @@ impl<'a> TaskRepository<'a> {
             None,
             at,
         )?;
-        record_audit(
+        record_approval_audit(
             &tx,
             correlation,
             &current.project_id,
-            Some(task_id),
-            "failure",
-            None,
+            task_id,
+            approval_id,
+            if decision == ApprovalDecisionInput::Approve {
+                "success"
+            } else {
+                "failure"
+            },
             at,
         )?;
-        let result = task_get_tx(&tx, task_id)?.ok_or(ErrorCode::TaskNotFound)?;
+        let result = approval_by_id(&tx, approval_id)?.ok_or(ErrorCode::InvalidRequest)?;
+        tx.commit().map_err(sql)?;
+        Ok(ApprovalReceipt {
+            approval: result,
+            duplicate: false,
+        })
+    }
+
+    pub fn approval_acknowledge(
+        &mut self,
+        approval_id: &str,
+        consume_request_id: &str,
+        acknowledged: bool,
+        correlation: &str,
+    ) -> Result<ApprovalRecord, ErrorCode> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        let approval = approval_by_id(&tx, approval_id)?.ok_or(ErrorCode::InvalidRequest)?;
+        if approval.consumption != "claimed" || consume_request_id.is_empty() {
+            return Err(ErrorCode::TaskConflictRevision);
+        }
+        let stored: Option<String> = tx
+            .query_row(
+                "SELECT consume_request_id FROM approvals WHERE id=?1",
+                [approval_id],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        if stored.as_deref() != Some(consume_request_id) {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let at = now()?;
+        let next = if acknowledged {
+            "acknowledged"
+        } else {
+            "abandoned"
+        };
+        tx.execute("UPDATE approvals SET consumption=?1,revision=revision+1 WHERE id=?2 AND consumption='claimed' AND consume_request_id=?3", params![next, approval_id, consume_request_id]).map_err(sql)?;
+        let task = task_get_tx(&tx, &approval.task_id)?.ok_or(ErrorCode::TaskNotFound)?;
+        record_consumption_audit(
+            &tx,
+            correlation,
+            &task.project_id,
+            &approval.task_id,
+            approval_id,
+            if acknowledged { "success" } else { "failure" },
+            at,
+        )?;
+        let result = approval_by_id(&tx, approval_id)?.ok_or(ErrorCode::InvalidRequest)?;
         tx.commit().map_err(sql)?;
         Ok(result)
+    }
+
+    pub fn approval_expire(
+        &mut self,
+        task_id: &str,
+        approval_id: &str,
+        correlation: &str,
+    ) -> Result<(), ErrorCode> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        let task = task_get_tx(&tx, task_id)?.ok_or(ErrorCode::TaskNotFound)?;
+        let approval = approval_by_id(&tx, approval_id)?.ok_or(ErrorCode::InvalidRequest)?;
+        if approval.task_id != task_id || approval.decision != "pending" {
+            return Ok(());
+        }
+        // Internal worker calls this at its monotonic deadline; clock rollback
+        // cannot extend permission lifetime. UTC checks also run on decide/claim.
+        let at = now()?.max(approval.requested_at);
+        expire_approval_tx(&tx, &approval, &task.project_id, correlation, at)?;
+        tx.commit().map_err(sql)
+    }
+
+    pub(crate) fn approval_verify_claim(
+        &mut self,
+        task_id: &str,
+        approval_id: &str,
+        token: &str,
+        correlation: &str,
+    ) -> Result<TaskRecord, ErrorCode> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        let task = task_get_tx(&tx, task_id)?.ok_or(ErrorCode::TaskNotFound)?;
+        let _proof = authorized_project(&tx, &task.project_id)?;
+        let approval = approval_by_id(&tx, approval_id)?.ok_or(ErrorCode::ApprovalNotPending)?;
+        if approval.task_id != task_id
+            || approval.consumption != "claimed"
+            || approval.consume_request_id.as_deref() != Some(token)
+            || !matches!(approval.decision.as_str(), "approved" | "denied")
+            || task.status != "running"
+        {
+            return Err(ErrorCode::ApprovalNotPending);
+        }
+        if now()? >= approval.expires_at {
+            tx.execute(
+                "UPDATE approvals SET consumption='abandoned',revision=revision+1 WHERE id=?1",
+                [approval_id],
+            )
+            .map_err(sql)?;
+            record_consumption_audit(
+                &tx,
+                correlation,
+                &task.project_id,
+                task_id,
+                approval_id,
+                "failure",
+                now()?,
+            )?;
+            tx.commit().map_err(sql)?;
+            return Err(ErrorCode::ApprovalExpired);
+        }
+        tx.commit().map_err(sql)?;
+        Ok(task)
     }
 
     /// The gateway is the only caller allowed to advance durable task state.
@@ -797,6 +963,9 @@ impl<'a> TaskRepository<'a> {
         let at = now()?;
         let started = (next_status == "running" && current.started_at.is_none()).then_some(at);
         let finished = is_terminal(next_status).then_some(at);
+        if is_terminal(next_status) {
+            invalidate_approvals(&tx, &current, correlation, at)?;
+        }
         tx.execute("UPDATE tasks SET status=?1,error_code=?2,revision=?3,started_at=coalesce(started_at,?4),finished_at=?5 WHERE id=?6 AND revision=?7", params![next_status,error_code,revision,started,finished,id,expected_revision]).map_err(sql)?;
         tx.execute(
             "UPDATE sessions SET updated_at=max(updated_at,?1) WHERE id=?2",
@@ -921,6 +1090,7 @@ impl<'a> TaskRepository<'a> {
             .filter(|value| *value <= MAX_SAFE)
             .ok_or(ErrorCode::TaskConflictRevision)?;
         let at = now()?;
+        invalidate_approvals(&tx, &current, correlation, at)?;
         tx.execute(
             "UPDATE tasks SET status='cancelling',revision=?1 WHERE id=?2 AND revision=?3",
             params![next_revision, id, expected_revision],
@@ -965,7 +1135,7 @@ impl<'a> TaskRepository<'a> {
         let _task = self.task_get(task_id)?;
         let mut statement = self
             .connection
-            .prepare("SELECT a.id,a.task_id,t.session_id,a.revision,a.operation_kind,coalesce(a.operation_fingerprint,''),'',a.decision,a.consumption,a.requested_at,coalesce(a.expires_at,a.requested_at+?2),a.decided_at,a.window_label FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.task_id=?1 ORDER BY a.requested_at,a.id")
+            .prepare("SELECT a.id,a.task_id,t.session_id,a.revision,a.operation_kind,coalesce(a.operation_fingerprint,''),'',a.decision,a.consumption,a.requested_at,coalesce(a.expires_at,a.requested_at+?2),a.decided_at,a.window_label,a.consume_request_id FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.task_id=?1 ORDER BY a.requested_at,a.id")
             .map_err(sql)?;
         statement
             .query_map(params![task_id, APPROVAL_TTL_MS], |r| {
@@ -983,6 +1153,7 @@ impl<'a> TaskRepository<'a> {
                     expires_at: r.get(10)?,
                     decided_at: r.get(11)?,
                     window_label: r.get(12)?,
+                    consume_request_id: r.get(13)?,
                 })
             })
             .map_err(sql)?
@@ -990,8 +1161,8 @@ impl<'a> TaskRepository<'a> {
             .map_err(sql)
     }
 
-    /// Store only the normalized approval binding and fingerprint. Display text
-    /// stays unavailable until a later step can produce a validated summary.
+    /// Persist binding metadata only. Validated summaries remain in the worker's
+    /// bounded process memory and are never collected into historical storage.
     pub fn approval_create(
         &mut self,
         input: ApprovalRequestInput,
@@ -1048,6 +1219,26 @@ impl<'a> TaskRepository<'a> {
             .map_err(sql)?;
         if current.status != "running" || origin_window != "main" {
             return Err(ErrorCode::TaskConflictRevision);
+        }
+        let claimed: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM approvals WHERE task_id=?1 AND consumption='claimed')",
+                [&input.task_id],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        if claimed {
+            return Err(ErrorCode::ApprovalUncertain);
+        }
+        let count: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM approvals WHERE task_id=?1",
+                [&input.task_id],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        if count >= 100 {
+            return Err(ErrorCode::TaskLimitExceeded);
         }
         let revision = current
             .revision
@@ -1365,14 +1556,14 @@ fn task_get_tx(c: &Connection, id: &str) -> Result<Option<TaskRecord>, ErrorCode
 }
 
 fn approval_by_id(c: &Connection, id: &str) -> Result<Option<ApprovalRecord>, ErrorCode> {
-    c.query_row("SELECT a.id,a.task_id,t.session_id,a.revision,a.operation_kind,coalesce(a.operation_fingerprint,''),'',a.decision,a.consumption,a.requested_at,coalesce(a.expires_at,a.requested_at+?2),a.decided_at,a.window_label FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.id=?1",params![id,APPROVAL_TTL_MS],|r| Ok(ApprovalRecord{id:r.get(0)?,task_id:r.get(1)?,session_id:r.get(2)?,revision:r.get(3)?,operation_kind:r.get(4)?,operation_fingerprint:r.get(5)?,display_summary:r.get(6)?,decision:r.get(7)?,consumption:r.get(8)?,requested_at:r.get(9)?,expires_at:r.get(10)?,decided_at:r.get(11)?,window_label:r.get(12)?})).optional().map_err(sql)
+    c.query_row("SELECT a.id,a.task_id,t.session_id,a.revision,a.operation_kind,coalesce(a.operation_fingerprint,''),'',a.decision,a.consumption,a.requested_at,coalesce(a.expires_at,a.requested_at+?2),a.decided_at,a.window_label,a.consume_request_id FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.id=?1",params![id,APPROVAL_TTL_MS],|r| Ok(ApprovalRecord{id:r.get(0)?,task_id:r.get(1)?,session_id:r.get(2)?,revision:r.get(3)?,operation_kind:r.get(4)?,operation_fingerprint:r.get(5)?,display_summary:r.get(6)?,decision:r.get(7)?,consumption:r.get(8)?,requested_at:r.get(9)?,expires_at:r.get(10)?,decided_at:r.get(11)?,window_label:r.get(12)?,consume_request_id:r.get(13)?})).optional().map_err(sql)
 }
 fn approval_by_external_request(
     c: &Connection,
     task_id: &str,
     request_id: &str,
 ) -> Result<Option<ApprovalRecord>, ErrorCode> {
-    c.query_row("SELECT a.id,a.task_id,t.session_id,a.revision,a.operation_kind,coalesce(a.operation_fingerprint,''),'',a.decision,a.consumption,a.requested_at,coalesce(a.expires_at,a.requested_at+?3),a.decided_at,a.window_label FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.task_id=?1 AND a.external_request_id=?2",params![task_id,request_id,APPROVAL_TTL_MS],|r| Ok(ApprovalRecord{id:r.get(0)?,task_id:r.get(1)?,session_id:r.get(2)?,revision:r.get(3)?,operation_kind:r.get(4)?,operation_fingerprint:r.get(5)?,display_summary:r.get(6)?,decision:r.get(7)?,consumption:r.get(8)?,requested_at:r.get(9)?,expires_at:r.get(10)?,decided_at:r.get(11)?,window_label:r.get(12)?})).optional().map_err(sql)
+    c.query_row("SELECT a.id,a.task_id,t.session_id,a.revision,a.operation_kind,coalesce(a.operation_fingerprint,''),'',a.decision,a.consumption,a.requested_at,coalesce(a.expires_at,a.requested_at+?3),a.decided_at,a.window_label,a.consume_request_id FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.task_id=?1 AND a.external_request_id=?2",params![task_id,request_id,APPROVAL_TTL_MS],|r| Ok(ApprovalRecord{id:r.get(0)?,task_id:r.get(1)?,session_id:r.get(2)?,revision:r.get(3)?,operation_kind:r.get(4)?,operation_fingerprint:r.get(5)?,display_summary:r.get(6)?,decision:r.get(7)?,consumption:r.get(8)?,requested_at:r.get(9)?,expires_at:r.get(10)?,decided_at:r.get(11)?,window_label:r.get(12)?,consume_request_id:r.get(13)?})).optional().map_err(sql)
 }
 
 fn insert_event(
@@ -1453,6 +1644,124 @@ fn record_audit(
     Ok(())
 }
 
+fn record_approval_audit(
+    c: &Connection,
+    correlation: &str,
+    project_id: &str,
+    task_id: &str,
+    approval_id: &str,
+    outcome: &str,
+    at: i64,
+) -> Result<(), ErrorCode> {
+    c.execute("INSERT INTO audit_events(id,occurred_at,correlation_id,event_kind,outcome,error_code,project_id,task_id,approval_id,profile_id,model_id,effort) VALUES(?1,?2,?3,'approval_decision',?4,NULL,?5,?6,?7,NULL,NULL,NULL)", params![repositories::new_audit_id(),at,correlation,outcome,project_id,task_id,approval_id]).map_err(|_| ErrorCode::AuditWriteFailed)?;
+    Ok(())
+}
+
+fn record_consumption_audit(
+    c: &Connection,
+    correlation: &str,
+    project_id: &str,
+    task_id: &str,
+    approval_id: &str,
+    outcome: &str,
+    at: i64,
+) -> Result<(), ErrorCode> {
+    c.execute("INSERT INTO audit_events(id,occurred_at,correlation_id,event_kind,outcome,error_code,project_id,task_id,approval_id,profile_id,model_id,effort) VALUES(?1,?2,?3,'task_transition',?4,NULL,?5,?6,?7,NULL,NULL,NULL)", params![repositories::new_audit_id(),at,correlation,outcome,project_id,task_id,approval_id]).map_err(|_| ErrorCode::AuditWriteFailed)?;
+    Ok(())
+}
+
+fn invalidate_approvals(
+    c: &Connection,
+    task: &TaskRecord,
+    correlation: &str,
+    at: i64,
+) -> Result<(), ErrorCode> {
+    let mut statement = c.prepare("SELECT id,decision,consumption FROM approvals WHERE task_id=?1 AND (decision='pending' OR consumption='claimed')").map_err(sql)?;
+    let rows = statement
+        .query_map([&task.id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    drop(statement);
+    for (id, decision, consumption) in rows {
+        if decision == "pending" {
+            c.execute("UPDATE approvals SET decision='interrupted',decided_at=?1,revision=revision+1 WHERE id=?2 AND decision='pending'", params![at, id]).map_err(sql)?;
+            record_approval_audit(
+                c,
+                correlation,
+                &task.project_id,
+                &task.id,
+                &id,
+                "interrupted",
+                at,
+            )?;
+        }
+        if consumption == "claimed" {
+            c.execute("UPDATE approvals SET consumption='abandoned',revision=revision+1 WHERE id=?1 AND consumption='claimed'", [&id]).map_err(sql)?;
+            record_consumption_audit(
+                c,
+                correlation,
+                &task.project_id,
+                &task.id,
+                &id,
+                "interrupted",
+                at,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn expire_approval_tx(
+    tx: &rusqlite::Transaction<'_>,
+    approval: &ApprovalRecord,
+    project_id: &str,
+    correlation: &str,
+    at: i64,
+) -> Result<(), ErrorCode> {
+    tx.execute("UPDATE approvals SET decision='expired',decided_at=?1,revision=revision+1 WHERE id=?2 AND decision='pending' AND revision=?3", params![at, approval.id, approval.revision]).map_err(sql)?;
+    let task = task_get_tx(tx, &approval.task_id)?.ok_or(ErrorCode::TaskNotFound)?;
+    if task.status == "approval_required" {
+        let revision = task
+            .revision
+            .checked_add(1)
+            .filter(|v| *v <= MAX_SAFE)
+            .ok_or(ErrorCode::TaskConflictRevision)?;
+        tx.execute(
+            "UPDATE tasks SET status='running',revision=?1 WHERE id=?2 AND revision=?3",
+            params![revision, task.id, task.revision],
+        )
+        .map_err(sql)?;
+        insert_event(
+            tx,
+            &task.id,
+            "status",
+            Some("running"),
+            Some(revision),
+            None,
+            None,
+            None,
+            None,
+            at,
+        )?;
+    }
+    record_approval_audit(
+        tx,
+        correlation,
+        project_id,
+        &approval.task_id,
+        &approval.id,
+        "failure",
+        at,
+    )
+}
+
 pub(super) fn recover_in_transaction(
     c: &Connection,
     correlation: &str,
@@ -1514,7 +1823,7 @@ pub(super) fn recover_in_transaction(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{project_contract::ProjectView, project_paths::authorize_fixture};
     use std::{cell::Cell, fs, path::PathBuf};
@@ -1523,18 +1832,21 @@ mod tests {
         format!("00000000-0000-4000-8000-{:012x}", seed)
     }
 
-    struct Fixture {
-        root: PathBuf,
-        db: crate::storage::Storage,
-        project: ProjectView,
+    pub(crate) struct Fixture {
+        pub(crate) root: PathBuf,
+        pub(crate) db: crate::storage::Storage,
+        pub(crate) project: ProjectView,
         selection: providers::Selection,
         keep_root: bool,
     }
     impl Fixture {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
+            Self::new_with_source(None)
+        }
+        pub(crate) fn new_with_source(external_source: Option<PathBuf>) -> Self {
             let root =
                 std::env::temp_dir().join(format!("pa-s3-03-{}", providers::uuid().unwrap()));
-            let source = root.join("project 中文");
+            let source = external_source.unwrap_or_else(|| root.join("project 中文"));
             fs::create_dir_all(&source).unwrap();
             let mut db = crate::storage::Storage::open(&root.join("data")).unwrap();
             let project = db
@@ -1567,7 +1879,7 @@ mod tests {
                 keep_root: false,
             }
         }
-        fn session(&mut self, seed: u8) -> SessionRecord {
+        pub(crate) fn session(&mut self, seed: u8) -> SessionRecord {
             self.db
                 .tasks()
                 .session_create(
@@ -1579,7 +1891,7 @@ mod tests {
                 .unwrap()
                 .session
         }
-        fn input(&self, session: &SessionRecord, request: u8) -> TaskStartInput {
+        pub(crate) fn input(&self, session: &SessionRecord, request: u8) -> TaskStartInput {
             TaskStartInput {
                 project_id: self.project.id.clone(),
                 session_id: session.id.clone(),
@@ -1592,6 +1904,37 @@ mod tests {
                 prompt: "private prompt sentinel".into(),
                 origin_window: "main",
             }
+        }
+        fn waiting(&mut self) -> (TaskRecord, ApprovalRecord) {
+            let session = self.session(81);
+            let input = self.input(&session, 82);
+            let task = self
+                .db
+                .tasks()
+                .task_start(input, &crate::ipc::correlation_id(), |_, _| Ok(()))
+                .unwrap()
+                .task;
+            self.db
+                .tasks()
+                .task_transition(&task.id, 1, "running", None, &crate::ipc::correlation_id())
+                .unwrap();
+            let approval = self
+                .db
+                .tasks()
+                .approval_create(
+                    ApprovalRequestInput {
+                        task_id: task.id.clone(),
+                        expected_task_revision: 2,
+                        external_request_id: "single-claim".into(),
+                        operation_kind: "command".into(),
+                        operation_fingerprint: "f".repeat(64),
+                        window_label: "main",
+                    },
+                    &crate::ipc::correlation_id(),
+                )
+                .unwrap()
+                .approval;
+            (self.db.tasks().task_get(&task.id).unwrap(), approval)
         }
         fn count(&self, table: &str) -> i64 {
             self.db
@@ -1623,12 +1966,577 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_decisions_across_connections_have_one_winner_and_no_second_claim() {
+        use std::sync::{Arc, Barrier};
+        let mut f = Fixture::new();
+        let (task, approval) = f.waiting();
+        let barrier = Arc::new(Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|index| {
+                let path = f.db.path.clone();
+                let task = task.clone();
+                let approval = approval.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut connection = Connection::open(path).unwrap();
+                    connection
+                        .busy_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    barrier.wait();
+                    TaskRepository::new(&mut connection).approval_decide(
+                        &task.id,
+                        &approval.id,
+                        approval.revision,
+                        task.revision,
+                        &approval.operation_fingerprint,
+                        "main",
+                        if index % 2 == 0 {
+                            ApprovalDecisionInput::Approve
+                        } else {
+                            ApprovalDecisionInput::Deny
+                        },
+                        &crate::ipc::correlation_id(),
+                    )
+                })
+            })
+            .collect();
+        let winners: Vec<_> = workers
+            .into_iter()
+            .filter_map(|worker| worker.join().unwrap().ok())
+            .collect();
+        assert_eq!(winners.len(), 1);
+        let audits: i64 = f.db.connection.query_row("SELECT count(*) FROM audit_events WHERE event_kind='approval_decision' AND approval_id=?1", [&approval.id], |r| r.get(0)).unwrap();
+        assert_eq!(audits, 1);
+        let winner = &winners[0].approval;
+        let token = winner.consume_request_id.as_ref().unwrap();
+        assert!(
+            f.db.tasks()
+                .approval_verify_claim(&task.id, &approval.id, token, &crate::ipc::correlation_id())
+                .is_ok()
+        );
+        let current = f.db.tasks().task_get(&task.id).unwrap();
+        f.db.tasks()
+            .task_cancel(&task.id, current.revision, &crate::ipc::correlation_id())
+            .unwrap();
+        assert!(
+            f.db.tasks()
+                .approval_verify_claim(&task.id, &approval.id, token, &crate::ipc::correlation_id())
+                .is_err()
+        );
+        assert_eq!(
+            f.db.tasks().approvals_get(&task.id).unwrap()[0].consumption,
+            "abandoned"
+        );
+    }
+
+    #[test]
+    fn final_commit_failure_cannot_release_decision_cancel_or_acknowledgment() {
+        let mut f = Fixture::new();
+        let (task, approval) = f.waiting();
+        f.db.connection.execute_batch("CREATE TEMP TABLE approval_commit_anchor(id TEXT PRIMARY KEY); CREATE TEMP TABLE approval_commit_guard(project TEXT REFERENCES approval_commit_anchor(id) DEFERRABLE INITIALLY DEFERRED); CREATE TEMP TRIGGER fail_decision_commit AFTER UPDATE OF decision ON approvals WHEN NEW.decision='approved' BEGIN INSERT INTO approval_commit_guard VALUES('absent-project'); END;").unwrap();
+        assert_eq!(
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &approval.id,
+                    1,
+                    3,
+                    &approval.operation_fingerprint,
+                    "main",
+                    ApprovalDecisionInput::Approve,
+                    &crate::ipc::correlation_id()
+                )
+                .unwrap_err(),
+            ErrorCode::SettingsStorageFailed
+        );
+        let pending = f.db.tasks().approvals_get(&task.id).unwrap().remove(0);
+        assert_eq!(pending.decision, "pending");
+        assert_eq!(pending.consumption, "unconsumed");
+        assert_eq!(f.db.tasks().task_get(&task.id).unwrap().revision, 3);
+        f.db.connection.execute_batch("DROP TRIGGER fail_decision_commit; CREATE TEMP TRIGGER fail_cancel_commit AFTER UPDATE OF status ON tasks WHEN NEW.status='cancelling' BEGIN INSERT INTO approval_commit_guard VALUES('absent-project'); END;").unwrap();
+        assert_eq!(
+            f.db.tasks()
+                .task_cancel(&task.id, 3, &crate::ipc::correlation_id())
+                .unwrap_err(),
+            ErrorCode::SettingsStorageFailed
+        );
+        assert_eq!(
+            f.db.tasks().approvals_get(&task.id).unwrap()[0].decision,
+            "pending"
+        );
+        assert_eq!(
+            f.db.tasks().task_get(&task.id).unwrap().status,
+            "approval_required"
+        );
+        f.db.connection
+            .execute_batch("DROP TRIGGER fail_cancel_commit;")
+            .unwrap();
+        let decided =
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &approval.id,
+                    1,
+                    3,
+                    &approval.operation_fingerprint,
+                    "main",
+                    ApprovalDecisionInput::Approve,
+                    &crate::ipc::correlation_id(),
+                )
+                .unwrap()
+                .approval;
+        f.db.connection.execute_batch("CREATE TEMP TRIGGER fail_ack_commit AFTER UPDATE OF consumption ON approvals WHEN NEW.consumption='acknowledged' BEGIN INSERT INTO approval_commit_guard VALUES('absent-project'); END;").unwrap();
+        assert_eq!(
+            f.db.tasks()
+                .approval_acknowledge(
+                    &approval.id,
+                    decided.consume_request_id.as_ref().unwrap(),
+                    true,
+                    &crate::ipc::correlation_id()
+                )
+                .unwrap_err(),
+            ErrorCode::SettingsStorageFailed
+        );
+        let uncertain = f.db.tasks().approvals_get(&task.id).unwrap().remove(0);
+        assert_eq!(uncertain.consumption, "claimed");
+        assert_eq!(uncertain.revision, 2);
+        let decisions: i64 = f.db.connection.query_row("SELECT count(*) FROM audit_events WHERE approval_id=?1 AND event_kind='approval_decision'", [&approval.id], |r| r.get(0)).unwrap();
+        let consumption: i64 = f.db.connection.query_row("SELECT count(*) FROM audit_events WHERE approval_id=?1 AND event_kind='task_transition'", [&approval.id], |r| r.get(0)).unwrap();
+        assert_eq!((decisions, consumption), (1, 0));
+        assert_eq!(
+            f.db.tasks()
+                .approval_create(
+                    ApprovalRequestInput {
+                        task_id: task.id.clone(),
+                        expected_task_revision: 4,
+                        external_request_id: "second-pending-action".into(),
+                        operation_kind: "command".into(),
+                        operation_fingerprint: "e".repeat(64),
+                        window_label: "main",
+                    },
+                    &crate::ipc::correlation_id()
+                )
+                .unwrap_err(),
+            ErrorCode::ApprovalUncertain
+        );
+        f.db.connection
+            .execute_batch("DROP TRIGGER approval_binding_fixed;")
+            .unwrap();
+        let at = now().unwrap();
+        f.db.connection
+            .execute(
+                "UPDATE approvals SET requested_at=?1,expires_at=?2 WHERE id=?3",
+                params![at - 400000, at - 1, approval.id],
+            )
+            .unwrap();
+        assert_eq!(
+            f.db.tasks()
+                .approval_verify_claim(
+                    &task.id,
+                    &approval.id,
+                    decided.consume_request_id.as_ref().unwrap(),
+                    &crate::ipc::correlation_id()
+                )
+                .unwrap_err(),
+            ErrorCode::ApprovalExpired
+        );
+        assert_eq!(
+            f.db.tasks().approvals_get(&task.id).unwrap()[0].consumption,
+            "abandoned"
+        );
+        let decisions: i64 = f.db.connection.query_row("SELECT count(*) FROM audit_events WHERE approval_id=?1 AND event_kind='approval_decision'", [&approval.id], |r| r.get(0)).unwrap();
+        assert_eq!(decisions, 1);
+    }
+
+    #[test]
+    fn expiry_and_unknown_operations_cannot_be_approved_and_restart_never_replays_claims() {
+        let mut f = Fixture::new();
+        let (task, approval) = f.waiting();
+        // Existing immutable binding cannot be rewritten; create a past TTL
+        // fixture by moving only the test row's requested/expiry timestamps.
+        f.db.connection
+            .execute_batch("DROP TRIGGER approval_binding_fixed;")
+            .unwrap();
+        let at = now().unwrap();
+        f.db.connection
+            .execute(
+                "UPDATE approvals SET requested_at=?1,expires_at=?2 WHERE id=?3",
+                params![at - 400000, at - 1, approval.id],
+            )
+            .unwrap();
+        assert_eq!(
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &approval.id,
+                    1,
+                    3,
+                    &approval.operation_fingerprint,
+                    "main",
+                    ApprovalDecisionInput::Approve,
+                    &crate::ipc::correlation_id()
+                )
+                .unwrap_err(),
+            ErrorCode::ApprovalExpired
+        );
+        let expired = f.db.tasks().approvals_get(&task.id).unwrap().remove(0);
+        assert_eq!(expired.decision, "expired");
+        assert_eq!(expired.consumption, "unconsumed");
+        assert_eq!(f.db.tasks().task_get(&task.id).unwrap().status, "running");
+        let unknown =
+            f.db.tasks()
+                .approval_create(
+                    ApprovalRequestInput {
+                        task_id: task.id.clone(),
+                        expected_task_revision: 4,
+                        external_request_id: "unknown-action".into(),
+                        operation_kind: "unknown".into(),
+                        operation_fingerprint: "e".repeat(64),
+                        window_label: "main",
+                    },
+                    &crate::ipc::correlation_id(),
+                )
+                .unwrap()
+                .approval;
+        assert_eq!(
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &unknown.id,
+                    1,
+                    5,
+                    &unknown.operation_fingerprint,
+                    "main",
+                    ApprovalDecisionInput::Approve,
+                    &crate::ipc::correlation_id()
+                )
+                .unwrap_err(),
+            ErrorCode::ApprovalBindingMismatch
+        );
+        let denied =
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &unknown.id,
+                    1,
+                    5,
+                    &unknown.operation_fingerprint,
+                    "main",
+                    ApprovalDecisionInput::Deny,
+                    &crate::ipc::correlation_id(),
+                )
+                .unwrap()
+                .approval;
+        let tx = f.db.connection.transaction().unwrap();
+        recover_in_transaction(&tx, &crate::ipc::correlation_id(), now().unwrap()).unwrap();
+        tx.commit().unwrap();
+        let recovered = f.db.tasks().approvals_get(&task.id).unwrap();
+        assert_eq!(
+            recovered
+                .iter()
+                .find(|item| item.id == denied.id)
+                .unwrap()
+                .consumption,
+            "abandoned"
+        );
+        assert!(
+            f.db.tasks()
+                .approval_verify_claim(
+                    &task.id,
+                    &denied.id,
+                    denied.consume_request_id.as_ref().unwrap(),
+                    &crate::ipc::correlation_id()
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cancelling_preparing_and_completion_races_keep_one_terminal_and_audit_failures_roll_back() {
+        let mut f = Fixture::new();
+        let session = f.session(91);
+        let input = f.input(&session, 92);
+        let task =
+            f.db.tasks()
+                .task_start(input, &crate::ipc::correlation_id(), |_, _| Ok(()))
+                .unwrap()
+                .task;
+        f.db.connection.execute_batch("CREATE TEMP TRIGGER fail_cancel BEFORE INSERT ON audit_events WHEN NEW.event_kind='task_transition' BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
+        assert_eq!(
+            f.db.tasks()
+                .task_cancel(&task.id, 1, &crate::ipc::correlation_id())
+                .unwrap_err(),
+            ErrorCode::AuditWriteFailed
+        );
+        assert_eq!(f.db.tasks().task_get(&task.id).unwrap().status, "preparing");
+        f.db.connection
+            .execute_batch("DROP TRIGGER fail_cancel;")
+            .unwrap();
+        let receipt =
+            f.db.tasks()
+                .task_cancel(&task.id, 1, &crate::ipc::correlation_id())
+                .unwrap();
+        assert!(receipt.accepted);
+        assert_eq!(receipt.status, "cancelling");
+        f.db.tasks()
+            .task_transition(
+                &task.id,
+                2,
+                "cancelled",
+                None,
+                &crate::ipc::correlation_id(),
+            )
+            .unwrap();
+        let session = f.session(93);
+        let input = f.input(&session, 94);
+        let task =
+            f.db.tasks()
+                .task_start(input, &crate::ipc::correlation_id(), |_, _| Ok(()))
+                .unwrap()
+                .task;
+        f.db.tasks()
+            .task_transition(&task.id, 1, "running", None, &crate::ipc::correlation_id())
+            .unwrap();
+        let receipt =
+            f.db.tasks()
+                .task_cancel(&task.id, 2, &crate::ipc::correlation_id())
+                .unwrap();
+        f.db.tasks()
+            .task_transition(
+                &task.id,
+                receipt.revision,
+                "completed",
+                None,
+                &crate::ipc::correlation_id(),
+            )
+            .unwrap();
+        assert!(
+            !f.db
+                .tasks()
+                .task_cancel(&task.id, 4, &crate::ipc::correlation_id())
+                .unwrap()
+                .accepted
+        );
+        assert!(
+            f.db.tasks()
+                .task_transition(
+                    &task.id,
+                    3,
+                    "cancelled",
+                    None,
+                    &crate::ipc::correlation_id()
+                )
+                .is_err()
+        );
+        assert_eq!(f.db.tasks().task_get(&task.id).unwrap().status, "completed");
+    }
+
+    #[test]
     fn transitions_are_one_way_and_terminal() {
         assert!(transition_allowed("preparing", "running"));
         assert!(transition_allowed("running", "approval_required"));
         assert!(transition_allowed("cancelling", "cancelled"));
         assert!(!transition_allowed("completed", "running"));
         assert!(!transition_allowed("closed", "active"));
+    }
+
+    #[test]
+    fn approval_decision_claim_ack_replay_bindings_and_audit_are_atomic() {
+        let mut f = Fixture::new();
+        let session = f.session(41);
+        let input = f.input(&session, 42);
+        let task =
+            f.db.tasks()
+                .task_start(input, &crate::ipc::correlation_id(), |_, _| Ok(()))
+                .unwrap()
+                .task;
+        f.db.tasks()
+            .task_transition(&task.id, 1, "running", None, &crate::ipc::correlation_id())
+            .unwrap();
+        let approval =
+            f.db.tasks()
+                .approval_create(
+                    ApprovalRequestInput {
+                        task_id: task.id.clone(),
+                        expected_task_revision: 2,
+                        external_request_id: "approval-fixture".into(),
+                        operation_kind: "command".into(),
+                        operation_fingerprint: "a".repeat(64),
+                        window_label: "main",
+                    },
+                    &crate::ipc::correlation_id(),
+                )
+                .unwrap()
+                .approval;
+        for (task_id, window, fingerprint) in [
+            (&session.id, "main", "a".repeat(64)),
+            (&task.id, "overlay", "a".repeat(64)),
+            (&task.id, "main", "b".repeat(64)),
+        ] {
+            assert!(
+                f.db.tasks()
+                    .approval_decide(
+                        task_id,
+                        &approval.id,
+                        1,
+                        3,
+                        &fingerprint,
+                        window,
+                        ApprovalDecisionInput::Approve,
+                        &crate::ipc::correlation_id()
+                    )
+                    .is_err()
+            );
+        }
+        f.db.connection.execute_batch("CREATE TEMP TRIGGER fail_approval_audit BEFORE INSERT ON audit_events WHEN NEW.event_kind='approval_decision' BEGIN SELECT RAISE(ABORT,'synthetic-secret'); END;").unwrap();
+        assert_eq!(
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &approval.id,
+                    1,
+                    3,
+                    &"a".repeat(64),
+                    "main",
+                    ApprovalDecisionInput::Approve,
+                    &crate::ipc::correlation_id()
+                )
+                .unwrap_err(),
+            ErrorCode::AuditWriteFailed
+        );
+        let pending = f.db.tasks().approvals_get(&task.id).unwrap().remove(0);
+        assert_eq!(pending.decision, "pending");
+        assert_eq!(pending.consumption, "unconsumed");
+        assert_eq!(
+            f.db.tasks().task_get(&task.id).unwrap().status,
+            "approval_required"
+        );
+        f.db.connection
+            .execute_batch("DROP TRIGGER fail_approval_audit;")
+            .unwrap();
+        let decided =
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &approval.id,
+                    1,
+                    3,
+                    &"a".repeat(64),
+                    "main",
+                    ApprovalDecisionInput::Approve,
+                    &crate::ipc::correlation_id(),
+                )
+                .unwrap();
+        assert_eq!(decided.approval.decision, "approved");
+        assert_eq!(decided.approval.consumption, "claimed");
+        assert!(
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &approval.id,
+                    1,
+                    3,
+                    &"a".repeat(64),
+                    "main",
+                    ApprovalDecisionInput::Deny,
+                    &crate::ipc::correlation_id()
+                )
+                .is_err()
+        );
+        assert!(
+            f.db.tasks()
+                .approval_acknowledge(
+                    &approval.id,
+                    "wrong-consumer",
+                    true,
+                    &crate::ipc::correlation_id()
+                )
+                .is_err()
+        );
+        let token = decided.approval.consume_request_id.unwrap();
+        let acknowledged =
+            f.db.tasks()
+                .approval_acknowledge(&approval.id, &token, true, &crate::ipc::correlation_id())
+                .unwrap();
+        assert_eq!(acknowledged.consumption, "acknowledged");
+        assert!(
+            f.db.tasks()
+                .approval_acknowledge(&approval.id, &token, true, &crate::ipc::correlation_id())
+                .is_err()
+        );
+        let audit_count: i64 = f.db.connection.query_row("SELECT count(*) FROM audit_events WHERE event_kind='approval_decision' AND approval_id=?1", [&approval.id], |r| r.get(0)).unwrap();
+        assert_eq!(audit_count, 1);
+    }
+
+    #[test]
+    fn cancellation_invalidates_approval_and_reports_acceptance_before_terminal() {
+        let mut f = Fixture::new();
+        let session = f.session(51);
+        let input = f.input(&session, 52);
+        let task =
+            f.db.tasks()
+                .task_start(input, &crate::ipc::correlation_id(), |_, _| Ok(()))
+                .unwrap()
+                .task;
+        f.db.tasks()
+            .task_transition(&task.id, 1, "running", None, &crate::ipc::correlation_id())
+            .unwrap();
+        let approval =
+            f.db.tasks()
+                .approval_create(
+                    ApprovalRequestInput {
+                        task_id: task.id.clone(),
+                        expected_task_revision: 2,
+                        external_request_id: "cancel-fixture".into(),
+                        operation_kind: "command".into(),
+                        operation_fingerprint: "a".repeat(64),
+                        window_label: "main",
+                    },
+                    &crate::ipc::correlation_id(),
+                )
+                .unwrap()
+                .approval;
+        let cancelled =
+            f.db.tasks()
+                .task_cancel(&task.id, 3, &crate::ipc::correlation_id())
+                .unwrap();
+        assert!(cancelled.accepted);
+        assert_eq!(cancelled.status, "cancelling");
+        assert_eq!(
+            f.db.tasks().approvals_get(&task.id).unwrap()[0].decision,
+            "interrupted"
+        );
+        assert!(
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &approval.id,
+                    1,
+                    3,
+                    &"a".repeat(64),
+                    "main",
+                    ApprovalDecisionInput::Approve,
+                    &crate::ipc::correlation_id()
+                )
+                .is_err()
+        );
+        let terminal =
+            f.db.tasks()
+                .task_transition(
+                    &task.id,
+                    4,
+                    "cancelled",
+                    None,
+                    &crate::ipc::correlation_id(),
+                )
+                .unwrap();
+        assert_eq!(terminal.status, "cancelled");
+        let late =
+            f.db.tasks()
+                .task_cancel(&task.id, 5, &crate::ipc::correlation_id())
+                .unwrap();
+        assert!(!late.accepted);
+        assert_eq!(late.status, "cancelled");
     }
 
     #[test]
@@ -1946,6 +2854,8 @@ fn valid_task_error(code: &str) -> bool {
     matches!(
         code,
         "PA_STORAGE_RESTART_INTERRUPTED"
+            | "PA_APPROVAL_EXPIRED"
+            | "PA_APPROVAL_UNCERTAIN"
             | "PA_TASK_PROTOCOL_INVALID"
             | "PA_TASK_LIMIT_EXCEEDED"
             | "PA_TASK_RECOVERY_BLOCKED"

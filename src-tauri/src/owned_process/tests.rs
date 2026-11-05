@@ -23,6 +23,7 @@ pub(super) fn selection(endpoint: &str) -> Selection {
         origin: Url::parse(endpoint).unwrap().origin().ascii_serialization(),
         model: "gpt-5.1-codex-mini".into(),
         effort: "medium".into(),
+        task_tools: false,
         fixture: false,
         fixture_ca: None,
     }
@@ -175,7 +176,7 @@ fn task_accumulator_enforces_total_output_bounds_and_exposes_only_normalized_eve
     let mut received = Vec::new();
     let mut callback = |event| {
         received.push(event);
-        Ok(())
+        Ok(None)
     };
     accumulator
         .push(
@@ -200,11 +201,51 @@ fn task_accumulator_enforces_total_output_bounds_and_exposes_only_normalized_eve
     assert_eq!(accumulator.events, received);
 
     let large = "x".repeat(MAX_TASK_CONTENT);
-    let mut callback = |_| Ok(());
+    let mut callback = |_| Ok(None);
     assert_eq!(
         accumulator.push(TaskEvent::ReplyDelta { text: large }, &mut callback,),
         Err(Failure::Protocol)
     );
+}
+
+#[test]
+fn queued_task_cancellation_and_failed_cancel_commit_do_not_start_or_cancel_other_work() {
+    let owned = Arc::new(OwnedProcessState::default());
+    let holder = owned.lock_serial().unwrap();
+    let cancel = Cancel::default();
+    let worker_owned = owned.clone();
+    let worker_cancel = cancel.clone();
+    let worker = thread::spawn(move || worker_owned.lock_serial_cancellable(&worker_cancel).err());
+    assert_eq!(
+        cancel.request_after::<()>(|| Err(ErrorCode::AuditWriteFailed)),
+        Err(ErrorCode::AuditWriteFailed)
+    );
+    assert!(!cancel.is_cancelled());
+    let accepted = cancel.request_after(|| Ok((true, true))).unwrap();
+    assert!(accepted);
+    assert_eq!(worker.join().unwrap(), Some(ErrorCode::ProcessCancelled));
+    assert!(!owned.is_blocked());
+    drop(holder);
+    assert!(owned.lock_serial_cancellable(&Cancel::default()).is_ok());
+}
+
+#[test]
+fn approval_summary_rejects_controls_oversize_and_known_secret_markers() {
+    assert!(safe_approval_text(
+        "pwsh.exe -NoProfile -Command Get-Location",
+        1800
+    ));
+    for text in [
+        "x\nRun-Other",
+        "Authorization: Bearer value",
+        "sk-sensitive",
+        "PA_OWNED_ROUTE_TOKEN",
+        "synthetic-sentinel",
+        "\u{1b}[2J",
+    ] {
+        assert!(!safe_approval_text(text, 1800));
+    }
+    assert!(!safe_approval_text(&"x".repeat(1801), 1800));
 }
 
 /// Invoked by `npm run verify:task-gateway` with an explicitly selected real
@@ -225,6 +266,7 @@ fn actual_cli_task_gateway_acceptance() {
     let scenario = std::env::var("PA_TASK_SCENARIO").unwrap();
     let mut selected = selection(&endpoint);
     selected.profile_id = profile_id;
+    selected.task_tools = true;
     selected.model = "gpt-5.1-codex-mini".into();
     selected.effort = "medium".into();
     selected.fixture = true;
@@ -287,11 +329,16 @@ fn actual_cli_task_gateway_acceptance() {
                 TaskEvent::ReplyDelta { .. } => "reply_delta",
                 TaskEvent::Progress { .. } => "progress",
                 TaskEvent::ApprovalRequired { .. } => "approval_required",
+                TaskEvent::ApprovalPoll => "approval_poll",
+                TaskEvent::ApprovalExpired => "approval_expired",
+                TaskEvent::OperationCompleted { .. } => "operation_completed",
+                TaskEvent::ApprovalAcknowledged { .. } => "approval_acknowledged",
+                TaskEvent::ApprovalAbandoned { .. } => "approval_abandoned",
                 TaskEvent::Completed => "completed",
                 TaskEvent::Cancelled => "cancelled",
                 TaskEvent::Failed => "failed",
             });
-            Ok(())
+            Ok(None)
         },
     );
     let requests = candidate.route.evidence.requests.load(Ordering::Acquire);
@@ -335,6 +382,158 @@ fn actual_cli_task_gateway_acceptance() {
         json!({"scenario":scenario,"requests":requests,"verifiedResponses":verified,
             "replyBytes":reply_bytes,"replyMarker":reply_marker,"eventKinds":event_kinds,
             "exit":exit,"errorCode":result.err().map(Failure::code)})
+    );
+}
+
+#[test]
+#[ignore = "invoked by verify:approvals with a real CLI and synthetic HTTPS"]
+fn actual_cli_approval_acceptance() {
+    use crate::storage::tasks::{ApprovalDecisionInput, ApprovalRequestInput};
+    let executable =
+        Executable::inspect(Path::new(&std::env::var("PA_TASK_CODEX_BIN").unwrap())).unwrap();
+    let root = PathBuf::from(std::env::var("PA_TASK_GATEWAY_ROOT").unwrap());
+    let project = root.join("approval project 中文");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    let scenario = std::env::var("PA_TASK_SCENARIO").unwrap();
+    let mut fixture = crate::storage::tasks::tests::Fixture::new_with_source(Some(project.clone()));
+    let session = fixture.session(71);
+    let input = fixture.input(&session, 72);
+    let task = fixture
+        .db
+        .tasks()
+        .task_start(input, &crate::ipc::correlation_id(), |_, _| Ok(()))
+        .unwrap()
+        .task;
+    let mut revision = 1;
+    let mut selected = selection(&std::env::var("PA_TASK_ENDPOINT").unwrap());
+    selected.task_tools = true;
+    selected.fixture = true;
+    selected.fixture_ca = Some(fs::read(std::env::var("PA_TASK_CA").unwrap()).unwrap());
+    let key = std::env::var("PA_TASK_SYNTHETIC_KEY").unwrap();
+    assert!(key.starts_with("synthetic-task-"));
+    let cancel = Cancel::default();
+    let mut candidate = Candidate::start(
+        &root,
+        &executable,
+        selected,
+        crate::credentials::SecretBuffer::new(key.into_bytes()),
+        Some(&project),
+        cancel.clone(),
+        Duration::from_secs(35),
+    )
+    .unwrap();
+    if scenario == "expire" {
+        candidate.approval_ttl = Duration::from_millis(100);
+    }
+    let mut approval_id = None;
+    let mut approved = 0;
+    let mut acknowledged = 0;
+    let mut resolved = 0;
+    let mut executed = 0;
+    let owned_pid = candidate.child.id();
+    let result = candidate.task("S3_04_PROMPT_SENTINEL: synthetic approval command.", &mut |event| {
+        match event {
+            TaskEvent::Running if revision == 1 => {
+                revision = fixture.db.tasks().task_transition(&task.id, revision, "running", None, &crate::ipc::correlation_id())?.revision;
+            }
+            TaskEvent::ApprovalRequired { external_request_id, operation_kind, operation_fingerprint, display_summary, .. } => {
+                assert_eq!(operation_kind, "command");
+                assert!(display_summary.contains("Get-Location"));
+                let approval = fixture.db.tasks().approval_create(ApprovalRequestInput {task_id: task.id.clone(), expected_task_revision: revision, external_request_id, operation_kind, operation_fingerprint: operation_fingerprint.clone(), window_label: "main"}, &crate::ipc::correlation_id())?.approval;
+                revision += 1;
+                approval_id = Some(approval.id.clone());
+                if scenario == "exit" {
+                    use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE}};
+                    let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, owned_pid) };
+                    assert!(!process.is_null());
+                    assert_ne!(unsafe { TerminateProcess(process, 1) }, 0);
+                    unsafe { CloseHandle(process); }
+                    return Ok(None);
+                }
+                if scenario == "cancel" {
+                    fixture.db.tasks().task_cancel(&task.id, revision, &crate::ipc::correlation_id())?;
+                    revision += 1;
+                    cancel.cancel();
+                    return Ok(None);
+                }
+                if scenario == "expire" { return Ok(None); }
+                if scenario == "audit" {
+                    fixture.db.connection.execute_batch("CREATE TEMP TRIGGER fail_approval BEFORE INSERT ON audit_events WHEN NEW.event_kind='approval_decision' BEGIN SELECT RAISE(ABORT,'synthetic'); END;").unwrap();
+                }
+                let decision = if scenario == "deny" { ApprovalDecisionInput::Deny } else { ApprovalDecisionInput::Approve };
+                let result = fixture.db.tasks().approval_decide(&task.id, &approval.id, 1, revision, &operation_fingerprint, "main", decision, &crate::ipc::correlation_id());
+                if scenario == "audit" {
+                    assert_eq!(result.unwrap_err(), ErrorCode::AuditWriteFailed);
+                    return Err(ErrorCode::AuditWriteFailed);
+                }
+                let decided = result?.approval;
+                revision += 1;
+                approved += usize::from(decided.decision == "approved");
+                assert!(fixture.db.tasks().approval_decide(&task.id, &approval.id, 1, revision - 1, &operation_fingerprint, "main", decision, &crate::ipc::correlation_id()).is_err());
+                return Ok(Some(ApprovalReply {approval_id: decided.id, consume_request_id: decided.consume_request_id.unwrap(), accepted: decision == ApprovalDecisionInput::Approve}));
+            }
+            TaskEvent::ApprovalAcknowledged { approval_id, consume_request_id } => {
+                fixture.db.tasks().approval_acknowledge(&approval_id, &consume_request_id, true, &crate::ipc::correlation_id())?;
+                acknowledged += 1;
+                resolved += 1;
+            }
+            TaskEvent::ApprovalAbandoned { .. } => return Err(ErrorCode::ApprovalUncertain),
+            TaskEvent::OperationCompleted { succeeded } => executed += usize::from(succeeded),
+            TaskEvent::ApprovalExpired => {
+                fixture.db.tasks().approval_expire(&task.id, approval_id.as_ref().unwrap(), &crate::ipc::correlation_id())?;
+                revision += 1;
+            }
+            _ => {},
+        }
+        Ok(None)
+    });
+    let exit = candidate.close().unwrap();
+    assert!(exit.cleaned && !exit.forced);
+    if scenario != "audit" {
+        let current = fixture.db.tasks().task_get(&task.id).unwrap();
+        let (status, error) = match scenario.as_str() {
+            "cancel" => ("cancelled", None),
+            "exit" => ("failed", Some("PA_CODEX_DISCONNECTED")),
+            _ => ("completed", None),
+        };
+        fixture
+            .db
+            .tasks()
+            .task_transition(
+                &task.id,
+                current.revision,
+                status,
+                error,
+                &crate::ipc::correlation_id(),
+            )
+            .unwrap();
+    }
+    let approvals = fixture.db.tasks().approvals_get(&task.id).unwrap();
+    assert_eq!(approvals.len(), 1, "must exercise a real CLI approval");
+    if scenario == "approve" || scenario == "deny" {
+        assert_eq!(result.as_ref().unwrap().outcome, TaskOutcome::Completed);
+        assert_eq!(acknowledged, 1);
+        assert_eq!(approvals[0].consumption, "acknowledged");
+    }
+    if scenario == "cancel" || scenario == "audit" || scenario == "exit" {
+        assert!(result.is_err());
+    }
+    if scenario == "expire" {
+        assert_eq!(approvals[0].decision, "expired");
+    }
+    if scenario == "approve" {
+        assert_eq!(approved, 1);
+    }
+    assert_eq!(executed, usize::from(scenario == "approve"));
+    let clean = fs::read_dir(&project)
+        .unwrap()
+        .all(|entry| entry.unwrap().file_name() == ".git");
+    assert!(clean);
+    fs::remove_dir_all(&project).unwrap();
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    println!(
+        "APPROVAL_EVIDENCE:{}",
+        json!({"scenario":scenario,"taskStatus":fixture.db.tasks().task_get_internal(&task.id).unwrap().status,"approved":approved,"executedSuccessfully":executed,"acknowledged":acknowledged,"resolved":resolved,"decision":approvals[0].decision,"consumption":approvals[0].consumption,"projectUnchanged":clean,"exit":exit,"error":result.err().map(Failure::code)})
     );
 }
 
