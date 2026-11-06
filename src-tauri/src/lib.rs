@@ -47,6 +47,25 @@ fn task_request<T: serde::de::DeserializeOwned>(
     ipc::parse_request(request)
 }
 
+fn overlay_task_request<T: serde::de::DeserializeOwned>(
+    window: &tauri::WebviewWindow,
+    request: serde_json::Value,
+    max_bytes: usize,
+) -> Result<T, ipc::ErrorCode> {
+    ipc::authorize(window, false)?;
+    if window.label() != "overlay" {
+        return Err(ipc::ErrorCode::PermissionDenied);
+    }
+    if serde_json::to_vec(&request)
+        .map_err(|_| ipc::ErrorCode::InvalidRequest)?
+        .len()
+        > max_bytes
+    {
+        return Err(ipc::ErrorCode::InputTooLarge);
+    }
+    ipc::parse_request(request)
+}
+
 #[tauri::command]
 async fn projects_add_from_picker(
     request: serde_json::Value,
@@ -523,6 +542,106 @@ fn task_change_get(
     let result = project_request::<tasks::results::DiffRequest>(&window, request)
         .and_then(|p| tasks::results::diff(&app, p));
     complete(&app, "task_change_get", id, result)
+}
+
+#[tauri::command]
+fn active_context_set(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<tasks::active::ContextState> {
+    let id = ipc::correlation_id();
+    let result = project_request::<tasks::active::ActiveContextSetRequest>(&window, request)
+        .and_then(|p| {
+            p.validate()?;
+            tasks::active::set_active_context(&app, p)
+        });
+    complete(&app, "active_context_set", id, result)
+}
+
+#[tauri::command]
+fn task_start_from_active(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<tasks::active::OverlayTaskReceipt> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        if window.label() != "overlay" {
+            return Err(ipc::ErrorCode::PermissionDenied);
+        }
+        let p = overlay_task_request::<tasks::active::OverlayTaskStartRequest>(
+            &window,
+            request,
+            96 * 1024,
+        )?;
+        p.validate()?;
+        tasks::active::start_from_active(&app, p, &id)
+    })();
+    complete(&app, "task_start_from_active", id, result)
+}
+
+#[tauri::command]
+fn overlay_task_get(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<serde_json::Value> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        if window.label() != "overlay" {
+            return Err(ipc::ErrorCode::PermissionDenied);
+        }
+        ipc::authorize(&window, false)?;
+        ipc::parse_request::<ipc::EmptyParams>(request)?;
+        let state = tasks::active::overlay_get(&app)?;
+        serde_json::to_value(state).map_err(|_| ipc::ErrorCode::InternalUnexpected)
+    })();
+    complete(&app, "overlay_task_get", id, result)
+}
+
+#[tauri::command]
+fn overlay_task_find_by_request(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<Option<tasks::active::OverlayTaskView>> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        if window.label() != "overlay" {
+            return Err(ipc::ErrorCode::PermissionDenied);
+        }
+        let p = overlay_task_request::<tasks::active::OverlayTaskFindRequest>(
+            &window,
+            request,
+            16 * 1024,
+        )?;
+        p.validate()?;
+        tasks::active::overlay_find_by_request(&app, p)
+    })();
+    complete(&app, "overlay_task_find_by_request", id, result)
+}
+
+#[tauri::command]
+fn overlay_task_cancel(
+    request: serde_json::Value,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> ipc::Response<storage::tasks::CancelReceipt> {
+    let id = ipc::correlation_id();
+    let result = (|| {
+        if window.label() != "overlay" {
+            return Err(ipc::ErrorCode::PermissionDenied);
+        }
+        let p = overlay_task_request::<tasks::active::OverlayTaskCancelRequest>(
+            &window,
+            request,
+            16 * 1024,
+        )?;
+        p.validate()?;
+        tasks::active::overlay_cancel(&app, p, &id)
+    })();
+    complete(&app, "overlay_task_cancel", id, result)
 }
 
 #[tauri::command]
@@ -1024,6 +1143,9 @@ async fn overlay_control(
     let result = (|| {
         ipc::authorize(&window, false)?;
         let action = overlay::validate_action(request, window.label() == "overlay")?;
+        if matches!(&action, overlay::OverlayAction::OpenMain) && window.label() == "overlay" {
+            tasks::active::focus_current_task(&app)?;
+        }
         let shortcut_change = matches!(action, overlay::OverlayAction::SetShortcut { .. });
         overlay::apply_with_id(&app, action, id.clone())?;
         if shortcut_change && overlay::view(&app).shortcut_error == Some("PA_SHORTCUT_CONFLICT") {
@@ -1366,6 +1488,11 @@ pub fn run() {
             task_content_get,
             task_changes_get,
             task_change_get,
+            active_context_set,
+            task_start_from_active,
+            overlay_task_get,
+            overlay_task_find_by_request,
+            overlay_task_cancel,
             desktop_initialize,
             app_get_status,
             settings_get,

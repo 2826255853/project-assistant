@@ -23,6 +23,7 @@
     "verify:projects": "node scripts/verify-projects.mjs",
     "verify:task-gateway": "node scripts/verify-task-gateway.mjs",
     "verify:task-ui": "node scripts/verify-task-ui.mjs",
+    "verify:task-overlay": "node scripts/verify-task-ui.mjs --step-3-7",
     "verify:approvals": "node scripts/verify-approvals.mjs",
     "test:ipc": "node --test scripts/ipc/*.test.mjs",
     "verify:ipc": "node scripts/verify-ipc.mjs",

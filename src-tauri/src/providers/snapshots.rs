@@ -62,19 +62,9 @@ pub(crate) fn capture_in_transaction(
     if c.is_autocommit() {
         return Err(ErrorCode::InvalidRequest);
     }
-    let blocked: bool = c
-        .query_row("SELECT blocked FROM ai_runtime WHERE id=1", [], |r| {
-            r.get(0)
-        })
-        .map_err(sql)?;
-    if blocked {
-        return Err(ErrorCode::ProviderRollbackFailed);
-    }
     let s = resolve(c, once, authorized_project)?;
+    let (v, tested) = validate_for_snapshot(c, &s)?;
     let at = now()?;
-    let v = repo::validate_selection(c, &s, at)?;
-    let tested:Option<i64>=c.query_row("SELECT max(tested_at) FROM provider_operations WHERE phase='completed' AND ((kind='test') OR (kind='switch' AND outcome='applied')) AND profile_id=?1 AND profile_revision=?2 AND model_id=?3 AND effort IS ?4 AND credential_revision=?5 AND adapter_version=?6 AND tested_at<=?7 AND tested_at>?8 AND capability_version=?9 AND effective_effort=?10",params![s.profile_id,s.expected_revision,s.model_id,s.effort,v.profile.profile.credential.revision,ADAPTER_VERSION,at,at-TEST_TTL,v.version,v.effort],|r|r.get(0)).map_err(sql)?;
-    let tested = tested.ok_or(ErrorCode::ProviderTestFailed)?;
     let id = uuid()?;
     let p = &v.profile.profile;
     c.execute("INSERT INTO ai_config_snapshots(id,profile_id,profile_name,source_kind,endpoint,endpoint_origin,wire_api,auth_kind,credential_ref,credential_revision,model_id,effort,config_revision,capability_source,capability_version,adapter_version,routing_scope,effective_at,captured_at) VALUES(?1,?2,?3,'relay',?4,?5,'responses','api_key',?6,?7,?8,?9,?10,?11,?12,?13,'owned_process',?14,?15)",params![id,p.id,p.name,p.endpoint,v.profile.origin,v.profile.credential_ref,p.credential.revision,s.model_id,Some(v.effort.clone()),s.expected_revision,v.source,v.version,ADAPTER_VERSION,tested,at]).map_err(sql)?;
@@ -92,6 +82,59 @@ pub(crate) fn capture_in_transaction(
         routing_scope: "owned_process",
     })
 }
+fn validate_for_snapshot(
+    c: &Connection,
+    s: &Selection,
+) -> Result<(repo::Validated, i64), ErrorCode> {
+    let blocked: bool = c
+        .query_row("SELECT blocked FROM ai_runtime WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .map_err(sql)?;
+    if blocked {
+        return Err(ErrorCode::ProviderRollbackFailed);
+    }
+    let at = now()?;
+    let v = repo::validate_selection(c, s, at)?;
+    let tested:Option<i64>=c.query_row("SELECT max(tested_at) FROM provider_operations WHERE phase='completed' AND ((kind='test') OR (kind='switch' AND outcome='applied')) AND profile_id=?1 AND profile_revision=?2 AND model_id=?3 AND effort IS ?4 AND credential_revision=?5 AND adapter_version=?6 AND tested_at<=?7 AND tested_at>?8 AND capability_version=?9 AND effective_effort=?10",params![s.profile_id,s.expected_revision,s.model_id,s.effort,v.profile.profile.credential.revision,ADAPTER_VERSION,at,at-TEST_TTL,v.version,v.effort],|r|r.get(0)).map_err(sql)?;
+    let tested = tested.ok_or(ErrorCode::ProviderTestFailed)?;
+    Ok((v, tested))
+}
+
+/// Same evidence checks as task admission, without inserting a snapshot.
+pub(crate) fn preview(
+    c: &Connection,
+    once: Option<&Selection>,
+    project: &str,
+) -> Result<(Selection, PublicSnapshot, String), ErrorCode> {
+    let (s, source) = resolve_with_source(c, once, Some(project))?;
+    let (v, tested) = validate_for_snapshot(c, &s)?;
+    let fingerprint = serde_json::to_string(&(
+        &s,
+        source,
+        &v.version,
+        &v.effort,
+        &v.profile.profile.endpoint,
+        v.profile.profile.credential.revision,
+        tested,
+    ))
+    .map_err(|_| ErrorCode::InvalidRequest)?;
+    let snapshot = PublicSnapshot {
+        id: uuid()?,
+        profile_id: s.profile_id.clone(),
+        profile_name: v.profile.profile.name,
+        source_kind: v.profile.profile.source_kind,
+        endpoint: v.profile.profile.endpoint,
+        model_id: s.model_id.clone(),
+        effort: Some(v.effort),
+        config_revision: s.expected_revision,
+        credential_revision: v.profile.profile.credential.revision,
+        effective_at: tested,
+        routing_scope: "owned_process",
+    };
+    Ok((s, snapshot, fingerprint))
+}
+
 pub(crate) fn get(c: &Connection, id: &str) -> Result<PublicSnapshot, ErrorCode> {
     if !valid_id(id) {
         return Err(ErrorCode::InvalidRequest);

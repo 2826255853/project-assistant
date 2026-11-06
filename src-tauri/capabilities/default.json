@@ -56,6 +56,7 @@
     "core:window:allow-close",
     "allow-task-content-get",
     "allow-task-changes-get",
-    "allow-task-change-get"
+    "allow-task-change-get",
+    "allow-active-context-set"
   ]
 }

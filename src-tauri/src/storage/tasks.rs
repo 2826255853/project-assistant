@@ -202,6 +202,51 @@ impl<'a> TaskRepository<'a> {
         Self { connection }
     }
 
+    /// Validate the project/session pair for the overlay context and return the
+    /// current revisions used by an active-context submission.
+    pub(crate) fn context_state(
+        &mut self,
+        project_id: &str,
+        session_id: &str,
+    ) -> Result<(i64, i64, i64, i64, String), ErrorCode> {
+        let project = project_state(self.connection, project_id)?;
+        let _proof = authorize_project(self.connection, project_id)?;
+        ensure_project_usable(&project)?;
+        let session =
+            session_get(self.connection, session_id)?.ok_or(ErrorCode::SessionNotFound)?;
+        if session.project_id != project_id {
+            return Err(ErrorCode::SessionProjectMismatch);
+        }
+        if session.status != "active" {
+            return Err(ErrorCode::SessionClosed);
+        }
+        let project_settings: i64 = self
+            .connection
+            .query_row(
+                "SELECT revision FROM project_settings_revisions WHERE project_id=?1",
+                [project_id],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        let global: i64 = self
+            .connection
+            .query_row(
+                "SELECT revision FROM settings_revisions WHERE scope='global'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        let name = self
+            .connection
+            .query_row(
+                "SELECT coalesce(display_name,name) FROM projects WHERE id=?1",
+                [project_id],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        Ok((project.0, session.revision, project_settings, global, name))
+    }
+
     pub fn session_create(
         &mut self,
         project_id: &str,
@@ -402,10 +447,10 @@ impl<'a> TaskRepository<'a> {
         verify_credential: impl FnOnce(&Connection, &PublicSnapshot) -> Result<(), ErrorCode>,
     ) -> Result<TaskReceipt, ErrorCode> {
         validate_request_id(&input.client_request_id)?;
-        if input.origin_window != "main" {
+        if !matches!(input.origin_window, "main" | "overlay") {
             return Err(ErrorCode::PermissionDenied);
         }
-        validate_prompt(&input.prompt)?;
+        validate_prompt_for_ipc(&input.prompt)?;
         if input.expected_project_revision < 1
             || input.expected_project_revision > MAX_SAFE
             || input.expected_session_revision < 1
@@ -1242,7 +1287,7 @@ impl<'a> TaskRepository<'a> {
                 |r| r.get(0),
             )
             .map_err(sql)?;
-        if current.status != "running" || origin_window != "main" {
+        if current.status != "running" || !matches!(origin_window.as_str(), "main" | "overlay") {
             return Err(ErrorCode::TaskConflictRevision);
         }
         let claimed: bool = tx
@@ -1399,7 +1444,7 @@ fn validate_request_id(value: &str) -> Result<(), ErrorCode> {
     }
     Ok(())
 }
-fn validate_prompt(value: &str) -> Result<(), ErrorCode> {
+pub(crate) fn validate_prompt_for_ipc(value: &str) -> Result<(), ErrorCode> {
     if value.trim().is_empty() {
         return Err(ErrorCode::EmptyMessage);
     }
@@ -1985,9 +2030,9 @@ pub(crate) mod tests {
     fn request_ids_and_prompts_are_bounded_without_retaining_text() {
         assert!(validate_request_id(&uuid(1)).is_ok());
         assert!(validate_request_id("plain-request").is_err());
-        assert!(validate_prompt("hello\nworld").is_ok());
-        assert!(validate_prompt("\0").is_err());
-        assert!(validate_prompt(" ").is_err());
+        assert!(validate_prompt_for_ipc("hello\nworld").is_ok());
+        assert!(validate_prompt_for_ipc("\0").is_err());
+        assert!(validate_prompt_for_ipc(" ").is_err());
     }
 
     #[test]

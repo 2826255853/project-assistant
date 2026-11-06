@@ -17,6 +17,7 @@ pub struct ServiceStatus {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActiveContext {
+    pub context_revision: i64,
     pub project_id: String,
     pub session_id: String,
     pub profile_id: String,
@@ -43,7 +44,10 @@ pub struct AppStatus {
     pub services: Vec<ServiceStatus>,
     pub cc_switch: ManualCcSwitchStatus,
     pub active_context: Option<ActiveContext>,
+    pub active_context_revision: i64,
     pub active_project: Option<ActiveProject>,
+    pub focus_task_id: Option<String>,
+    pub focus_task_revision: i64,
     pub task_status: &'static str,
     pub overlay: overlay::OverlayView,
 }
@@ -71,6 +75,9 @@ pub struct StateData {
     sequence: u64,
     pub active_context: Option<ActiveContext>,
     pub active_project: Option<ActiveProject>,
+    pub focus_task_id: Option<String>,
+    pub focus_task_revision: i64,
+    pub task_context: crate::tasks::active::ActiveState,
     #[cfg(debug_assertions)]
     pub last_event: Option<AppEvent>,
 }
@@ -81,6 +88,9 @@ impl Default for StateData {
             sequence: 0,
             active_context: None,
             active_project: None,
+            focus_task_id: None,
+            focus_task_revision: 0,
+            task_context: Default::default(),
             #[cfg(debug_assertions)]
             last_event: None,
         }
@@ -130,7 +140,14 @@ impl StateData {
             } else {
                 self.active_context.clone()
             },
+            active_context_revision: self.task_context.revision,
             active_project: self.active_project.clone(),
+            focus_task_id: if private_draft {
+                None
+            } else {
+                self.focus_task_id.clone()
+            },
+            focus_task_revision: self.focus_task_revision,
             task_status: "idle",
             overlay,
             cc_switch: ManualCcSwitchStatus {
@@ -364,6 +381,7 @@ pub fn set_active_project_locked(
         return false;
     }
     data.active_project = project;
+    crate::tasks::active::invalidate_for_project(data);
     publish_locked(app, data, correlation_id);
     true
 }
@@ -379,6 +397,7 @@ pub fn fixture(
     match action {
         "context" => {
             data.active_context = Some(ActiveContext {
+                context_revision: 1,
                 project_id: "synthetic-project".into(),
                 session_id: "synthetic-session".into(),
                 profile_id: "synthetic-profile".into(),
@@ -418,6 +437,7 @@ mod tests {
         let mut state = StateData::default();
         assert_ne!(state.stream_id, StateData::default().stream_id);
         state.active_context = Some(ActiveContext {
+            context_revision: 1,
             project_id: "synthetic-project".into(),
             session_id: "synthetic-session".into(),
             profile_id: "synthetic-profile".into(),

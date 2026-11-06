@@ -28,31 +28,33 @@ test("approval receipts omit internal consumer/window authority and cancellation
   assert.equal(isCancelReceipt({accepted: true, status: "cancelling", revision: 3}), true);
   assert.equal(isCancelReceipt({accepted: false, status: "completed", revision: 4}), true);
   assert.equal(isCancelReceipt({accepted: true, status: "cancelling", revision: 3, terminated: true}), false);
-  for (const code of ["PA_APPROVAL_NOT_PENDING", "PA_APPROVAL_EXPIRED", "PA_APPROVAL_BINDING_MISMATCH", "PA_APPROVAL_UNCERTAIN"]) {
+  for (const code of ["PA_APPROVAL_NOT_PENDING", "PA_APPROVAL_EXPIRED", "PA_APPROVAL_BINDING_MISMATCH", "PA_APPROVAL_UNCERTAIN", "PA_TASK_CONTEXT_STALE", "PA_APPROVAL_OPERATION_MISMATCH"]) {
     assert.equal(errorForCode(code).code, code);
     assert.equal(errorForCode(code).retryable, false);
   }
 });
 
-test("S3-06 exposes session/task gateway and approval decisions only to main", async () => {
+test("S3-07 exposes active-context task actions with minimum window permissions", async () => {
   const [contracts, taskContracts, client, rust, manifest, main, overlay] = await Promise.all([
     read("../../src/ipc/contracts.ts"), read("../../src/ipc/taskContracts.ts"),
     read("../../src/ipc/client.ts"), read("../../src-tauri/src/lib.rs"),
     read("../../src-tauri/build.rs"), read("../../src-tauri/capabilities/default.json").then(JSON.parse),
     read("../../src-tauri/capabilities/overlay.json").then(JSON.parse),
   ]);
-  assert.ok(contracts.includes('Extract<keyof ImplementedCommandMap, "active_context_set"'));
+  assert.ok(contracts.includes("TaskCommandsImplemented"));
   const declared = [...taskContracts.split("export interface TaskCommandMap {")[1].matchAll(/^  ([a-z_]+):/gm)].map(match => match[1]);
   assert.deepEqual(declared.sort(), [...taskCommands].sort(), "every future task command must be checked");
   const implementedCommands = ["session_create", "session_find_by_request", "sessions_list", "session_get", "session_resume", "session_end",
-    "task_start", "task_find_by_request", "tasks_list", "task_get", "task_cancel", "task_events_get", "approvals_get", "approval_decide", "task_content_get", "task_changes_get", "task_change_get"];
+    "task_start", "task_find_by_request", "tasks_list", "task_get", "task_cancel", "task_events_get", "approvals_get", "approval_decide", "task_content_get", "task_changes_get", "task_change_get", "active_context_set", "task_start_from_active", "overlay_task_get", "overlay_task_cancel", "overlay_task_find_by_request"];
   for (const name of implementedCommands) {
     assert.ok(contracts.match(/export interface ImplementedCommandMap \{([\s\S]*?)^\}/m)?.[1].includes(name), `${name} must be in the callable map`);
     assert.match(client, new RegExp(`\\b${name}:`), `${name} must have a runtime validator`);
     assert.match(rust, new RegExp(`#\\[tauri::command\\]\\s*(?:async\\s+)?fn\\s+${name}\\s*\\(`));
     assert.ok(manifest.includes(`"${name}"`));
-    assert.ok(main.permissions.includes(`allow-${name.replaceAll("_", "-")}`));
-    assert.ok(!overlay.permissions.includes(`allow-${name.replaceAll("_", "-")}`));
+    if (name === "active_context_set" || ["session_create", "session_find_by_request", "sessions_list", "session_get", "session_resume", "session_end", "task_start", "task_find_by_request", "tasks_list", "task_get", "task_cancel", "task_events_get", "approvals_get", "approval_decide", "task_content_get", "task_changes_get", "task_change_get"].includes(name)) {
+      assert.ok(main.permissions.includes(`allow-${name.replaceAll("_", "-")}`));
+    }
+    if (name.startsWith("overlay_task") || name === "task_start_from_active") assert.ok(overlay.permissions.includes(`allow-${name.replaceAll("_", "-")}`));
   }
   for (const name of taskCommands.filter(name => !implementedCommands.includes(name))) {
     assert.match(taskContracts, new RegExp(`\\b${name}:`));

@@ -11,7 +11,7 @@ import { isLogStatus } from "./logging";
 import { isCredentialMutation } from "./credentials";
 import { isProviderList, isProviderProfile, isModels, isReceipt, isOperation, isRemoved, isAccepted } from "./providers";
 import { errorForCode } from "./errors";
-import { isSessionView, isSessionReceipt, isSessionPage, isTaskView, isTaskReceipt, isTaskPage, isCancelReceipt, isTaskEventPage, isApprovalPage, isApprovalReceipt, isTaskContent, isTaskChangePage, isTaskDiff } from "./taskContracts";
+import { isSessionView, isSessionReceipt, isSessionPage, isTaskView, isTaskReceipt, isTaskPage, isCancelReceipt, isTaskEventPage, isApprovalPage, isApprovalReceipt, isTaskContent, isTaskChangePage, isTaskDiff, isActiveContextState, isOverlayTaskReceipt, isOverlayTaskState, isOverlayTaskView } from "./taskContracts";
 import { isProjectView, isProjectPickerResult, isRemovedProject, isProjectListPage, isProjectOpenAccepted, isProjectFilePickerResult, isGitSummary, isSelectedProject, isProjectSettingsView } from "./projects";
 import { ProjectSearchController } from "./projectSearch";
 import type { ProjectSearchState } from "./projectSearch";
@@ -39,12 +39,17 @@ const validators: { [K in Name]: (data: unknown) => data is ImplementedCommandMa
   task_get: isTaskView, task_cancel: isCancelReceipt, task_events_get: isTaskEventPage,
   approvals_get: isApprovalPage, approval_decide: isApprovalReceipt,
   task_content_get: isTaskContent, task_changes_get: isTaskChangePage, task_change_get: isTaskDiff,
+  active_context_set: isActiveContextState, task_start_from_active: isOverlayTaskReceipt,
+  overlay_task_get: isOverlayTaskState, overlay_task_cancel: isCancelReceipt,
+  overlay_task_find_by_request: value => value === null || isOverlayTaskView(value),
 };
 export function call(command: "settings_get", params: { scope: "global" }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SettingsView>;
 export function call(command: "settings_get", params: { scope: "project"; projectId: string }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ProjectSettingsView>;
 export function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]>;
 export async function call<K extends Name>(command: K, params: ImplementedCommandMap[K]["params"], options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ImplementedCommandMap[K]["data"]> {
-  if ((command === "logs_get_status" || command === "logs_clear" || command === "credential_put" || command === "credential_remove" || command.startsWith("project") || command.startsWith("provider") || command.startsWith("operation_") || command.startsWith("session") || command.startsWith("task") || command === "sessions_list" || command === "tasks_list" || command === "approvals_get" || command === "approval_decide") && !isMainWindow()) throw errorForCode("PA_IPC_PERMISSION_DENIED");
+  const mainOnly = command === "active_context_set" || command === "logs_get_status" || command === "logs_clear" || command === "credential_put" || command === "credential_remove" || command.startsWith("project") || command.startsWith("provider") || command.startsWith("operation_") || command.startsWith("session") || command === "task_start" || command === "task_find_by_request" || command === "tasks_list" || command === "task_get" || command === "task_cancel" || command === "task_events_get" || command === "approvals_get" || command === "approval_decide" || command === "task_content_get" || command === "task_changes_get" || command === "task_change_get";
+  const overlayOnly = command === "task_start_from_active" || command === "overlay_task_get" || command === "overlay_task_cancel" || command === "overlay_task_find_by_request";
+  if ((mainOnly && !isMainWindow()) || (overlayOnly && !isOverlayWindow())) throw errorForCode("PA_IPC_PERMISSION_DENIED");
   const timeoutMs = command === "project_pick_file" ? 120000 : command === "project_open_directory" || command === "project_open_file" ? 12000 : command === "project_git_summary" ? 8000 : undefined;
   const wire = await awaitTransport(() => invoke<unknown>(command, { request: { apiVersion: API_VERSION, params } }), { timeoutMs, ...options });
   const responseValidator = (command === "settings_get"

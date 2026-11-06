@@ -74,7 +74,7 @@ test("app status carries a bounded process-only active project independently of 
   const status = {
     apiVersion:1,streamId:"stream-ipc-1-ab-0",sequence:2,configState:"unconfigured",services,
     ccSwitch:{management:"user_manual",integration:"disabled",readSupported:false,switchSupported:false},
-    activeContext:null,taskStatus:"idle",
+    activeContextRevision:0,activeContext:null,focusTaskId:null,focusTaskRevision:0,taskStatus:"idle",
     overlay:{enabled:true,expanded:false,shortcut:"Ctrl+Alt+Space",shortcutError:null,windowError:null,draft:"",trayReady:true},
     activeProject:{projectId:"c14e7b09-b84c-44bc-9b57-a7182e70b056",name:"synthetic-project"},
   };

@@ -2149,7 +2149,7 @@ AI 配置补充任务应随上述清单推进：在通信验证时确认自有�
 | 3.4 / S3-04 | 通过（网关实现及真实 CLI/双合成 HTTPS 自动验收，2026-11-05） | 自有任务网关、事件归一、输出/速率边界、任务 worker、取消与退出清理；`docs/phase-3/step-3.4.md` | 176 Rust 单测、37 IPC、built 构建及 9 项真实 CLI/双合成 HTTPS 检查通过；审批最终决定、运行中配置切换和桌面闭环留 3.5–3.9；M3 未通过 |
 | 3.5 / S3-05 | 通过（单次命令审批、取消服务及自动验收，2026-11-05） | main-only `approval_decide`、原子决定/claim/审计、CLI 确认与失效、取消发送锁/排队取消；`docs/phase-3/step-3.5.md` | 186 Rust、38 IPC、15 离线、6 项真实 CLI/合成 HTTPS 审批场景、网关/隔离路由及 built 构建通过；无绑定补丁的 grantRoot 拒绝，UI/overlay/运行中切换留 3.6–3.9，M3 未通过 |
 | 3.6 / S3-06 | 通过（主窗口会话/任务、受限结果及自动验收，2026-11-06） | 任务页、main-only 正文/变更/差异读取、事件字段修复、状态与路径身份复核；`docs/phase-3/step-3.6.md` | `verify:task-ui`：190 Rust、40 IPC、15 离线、built/dev 各 12 项通过；网关/审批/隔离路由子集、普通应用构建与 built shell 回归通过。差异/恢复等注入与真实 CLI 任务分列，补丁批准仍受限；overlay/并发/阶段汇总在 3.7–3.9，M3 未整体通过 |
-| 3.7 / S3-07 | 待开始 | overlay 提交、反馈和最小权限；`docs/phase-3/step-3.7.md` | 上下文继承、IME、重建和人工待验 |
+| 3.7 / S3-07 | 有条件通过（overlay 任务闭环与自动验收，2026-11-06） | 服务端活动上下文修订、overlay 提交/幂等查询/最小状态/取消、主窗口任务跳转、最小 capability；`npm run verify:task-overlay`；`docs/phase-3/step-3.7.md` | `artifacts/phase-3-7/report.json`：dev/built 真实 WebView 均通过，真实自有 CLI + 合成 HTTPS；192 Rust、40 IPC、构建/释放检查通过。物理中文 IME、托盘/显示器/DPI待人工复核；3.8 并发切换与组合恢复未验，M3 未整体通过 |
 | 3.8 / S3-08 | 待开始 | 并发切换、恢复和退出流程；`docs/phase-3/step-3.8.md` | 真实运行任务下的快照稳定与资源清理 |
 | 3.9 / S3-09 | 待开始 | `verify:tasks`、脱敏证据及阶段移交；`docs/phase-3/step-3.9.md` | M3 用例覆盖与上游人工/平台边界 |
 

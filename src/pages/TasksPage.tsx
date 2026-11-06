@@ -13,7 +13,7 @@ const sessionLabel = (session: SessionView) => ({ active: "活动", closed: "已
 type Pending = { kind: "session" | "task"; projectId: string; sessionId: string; clientRequestId: string };
 type ResultView = { task: TaskView; reply: string; progress: string; available: boolean; approvals: ApprovalView[]; changes: TaskChange[] };
 
-export function TasksPage({ onProjects, onConfigure }: { onProjects: () => void; onConfigure: () => void }) {
+export function TasksPage({ onProjects, onConfigure, focusTaskId }: { onProjects: () => void; onConfigure: () => void; focusTaskId?: string | null }) {
   const { status } = useAppStatus();
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [projectCursor, setProjectCursor] = useState<string | null>(null);
@@ -61,6 +61,28 @@ export function TasksPage({ onProjects, onConfigure }: { onProjects: () => void;
   const canSend = taskService?.state === "ready" && allowed && validConfig && confirmed && session?.status === "active" && Boolean(prompt.trim()) && promptBytes <= 65536 && !busy && !pending && !tasks.some(t => !ended(t));
 
   useEffect(() => { setConfirmed(false); }, [projectId, sessionId, override, effective?.profileId, effective?.expectedRevision, effective?.modelId, effective?.effort, settings?.revision, settings?.globalRevision, project?.revision]);
+  useEffect(() => {
+    if (!focusTaskId) return;
+    let disposed = false;
+    void call("task_get", { taskId: focusTaskId }).then(task => {
+      if (disposed) return;
+      setProjectId(task.projectId); setSessionId(task.sessionId); setTaskId(task.id);
+      setNotice("已打开悬浮入口提交的任务详情。");
+    }).catch(cause => { if (!disposed) setError(toPublicError(cause)); });
+    return () => { disposed = true; };
+  }, [focusTaskId]);
+  useEffect(() => {
+    if (!status || busy || pending) return;
+    const usable = Boolean(project && allowed && validConfig && session?.status === "active");
+    const current = status.activeContext;
+    if (!usable && !current) return;
+    let disposed = false;
+    void call("active_context_set", { projectId: usable ? project!.id : null, sessionId: usable ? session!.id : null,
+      selection: usable && override ? selection : null, expectedContextRevision: status.activeContextRevision })
+      .catch(cause => { if (!disposed && toPublicError(cause).code !== "PA_TASK_CONTEXT_STALE") setError(toPublicError(cause)); });
+    return () => { disposed = true; };
+  }, [project?.id, project?.revision, session?.id, session?.revision, session?.status, settings?.revision, settings?.globalRevision,
+    effective?.profileId, effective?.expectedRevision, effective?.modelId, effective?.effort, override, allowed, validConfig, busy, pending, status?.activeContextRevision]);
   useEffect(() => {
     let disposed = false;
     void Promise.all([call("projects_list", { limit: 100 }), call("providers_list", {})]).then(([p, ai]) => {

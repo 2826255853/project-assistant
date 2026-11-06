@@ -78,7 +78,7 @@ export interface ManualCcSwitchStatus {
   readSupported: false; switchSupported: false;
 }
 
-export interface ActiveContext { projectId: string; sessionId: string; profileId: string; modelId: string; effort: string | null }
+export interface ActiveContext { contextRevision: number; projectId: string; sessionId: string; profileId: string; modelId: string; effort: string | null }
 // Phase 2 project DTOs are compile-time contracts only until each project
 // service is implemented and added to ImplementedCommandMap.
 export type ProjectAvailability = "available" | "missing" | "inaccessible" | "identity_changed";
@@ -105,7 +105,7 @@ export interface ServiceStatus { id: "desktop" | "ipc" | "events" | "overlay" | 
 export interface AppStatus {
   apiVersion: 1; streamId: string; sequence: number; configState: ConfigState;
   services: ServiceStatus[]; ccSwitch: ManualCcSwitchStatus;
-  activeContext: ActiveContext | null; taskStatus: "idle"; overlay: OverlayView;
+  activeContextRevision: number; activeContext: ActiveContext | null; focusTaskId: string | null; focusTaskRevision: number; taskStatus: "idle"; overlay: OverlayView;
   activeProject: ActiveProject | null;
 }
 export type OverlayAction =
@@ -161,6 +161,11 @@ export interface ImplementedCommandMap {
   task_content_get: CommandMap["task_content_get"];
   task_changes_get: CommandMap["task_changes_get"];
   task_change_get: CommandMap["task_change_get"];
+  active_context_set: CommandMap["active_context_set"];
+  task_start_from_active: CommandMap["task_start_from_active"];
+  overlay_task_get: CommandMap["overlay_task_get"];
+  overlay_task_cancel: CommandMap["overlay_task_cancel"];
+  overlay_task_find_by_request: CommandMap["overlay_task_find_by_request"];
 }
 type Assert<T extends true> = T;
 export type FutureProjectCommandsRemainUnimplemented = Assert<
@@ -168,9 +173,7 @@ export type FutureProjectCommandsRemainUnimplemented = Assert<
 >;
 
 // All mutations use optimistic revisions; operation receipts are acceptance, not success.
-export type FutureTaskCommandsRemainUnimplemented = Assert<
-  Extract<keyof ImplementedCommandMap, "active_context_set" | "task_start_from_active" | "overlay_task_get" | "overlay_task_cancel" | "overlay_task_find_by_request"> extends never ? true : false
->;
+export type TaskCommandsImplemented = Assert<Exclude<keyof TaskCommandMap, keyof ImplementedCommandMap> extends never ? true : false>;
 export interface CommandMap extends TaskCommandMap {
   framework_probe: { params: { message: string }; data: ProbeReply };
   app_get_status: ImplementedCommandMap["app_get_status"];

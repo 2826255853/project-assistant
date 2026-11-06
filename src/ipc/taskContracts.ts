@@ -60,6 +60,8 @@ export interface ActiveTaskContext {
   contextRevision: number; projectId: string; projectName: string;
   sessionId: string; selection: AiSelection;
 }
+export interface ActiveContextState { contextRevision: number; context: ActiveTaskContext | null }
+export interface OverlayTaskState extends ActiveContextState { task: OverlayTaskView | null; pendingRequestId: string | null }
 export interface OverlayTaskView {
   taskId: string; status: TaskStatus; revision: number;
   replyPreview: string; contentAvailable: boolean;
@@ -78,6 +80,24 @@ function isAppError(value: unknown): value is AppError {
     typeof value.code === "string" && /^PA_[A-Z0-9_]{1,96}$/.test(value.code) &&
     ["validation", "permission", "environment", "authentication", "compatibility", "conflict", "timeout", "cancelled", "external", "storage", "internal"].includes(String(value.category)) &&
     bounded(value.message, 512) && bounded(value.suggestion, 512) && typeof value.retryable === "boolean";
+}
+export function isActiveTaskContext(value: unknown): value is ActiveTaskContext {
+  return record(value) && exact(value, ["contextRevision", "projectId", "projectName", "sessionId", "selection"]) && revision(value.contextRevision) && uuid(value.projectId) && bounded(value.projectName, 1024) && uuid(value.sessionId) && isSelection(value.selection);
+}
+function isSelection(value: unknown): value is AiSelection {
+  return record(value) && exact(value, ["profileId", "expectedRevision", "modelId", "effort"]) && typeof value.profileId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value.profileId) && revision(value.expectedRevision) && typeof value.modelId === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(value.modelId) && (value.effort === null || (typeof value.effort === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(value.effort)));
+}
+export function isOverlayTaskView(value: unknown): value is OverlayTaskView {
+  return record(value) && exact(value, ["taskId", "status", "revision", "replyPreview", "contentAvailable", "approvalPending", "errorCode"]) && uuid(value.taskId) && ["preparing", "running", "approval_required", "cancelling", "completed", "failed", "cancelled", "interrupted"].includes(String(value.status)) && revision(value.revision) && bounded(value.replyPreview, 512) && typeof value.contentAvailable === "boolean" && typeof value.approvalPending === "boolean" && (value.errorCode === null || /^PA_[A-Z0-9_]{1,96}$/.test(String(value.errorCode)));
+}
+export function isOverlayTaskReceipt(value: unknown): value is OverlayTaskReceipt {
+  return record(value) && exact(value, ["task", "duplicate"]) && isOverlayTaskView(value.task) && typeof value.duplicate === "boolean";
+}
+export function isActiveContextState(value: unknown): value is ActiveContextState {
+  return record(value) && exact(value, ["contextRevision", "context"]) && time(value.contextRevision) && (value.context === null || isActiveTaskContext(value.context) && value.context.contextRevision === value.contextRevision);
+}
+export function isOverlayTaskState(value: unknown): value is OverlayTaskState {
+  return record(value) && exact(value, ["contextRevision", "context", "task", "pendingRequestId"]) && time(value.contextRevision) && (value.context === null || isActiveTaskContext(value.context) && value.context.contextRevision === value.contextRevision) && (value.task === null || isOverlayTaskView(value.task)) && (value.pendingRequestId === null || uuid(value.pendingRequestId));
 }
 function isSnapshot(value: unknown): value is PublicSnapshot {
   return record(value) && exact(value, ["id", "profileId", "profileName", "sourceKind", "endpoint", "modelId", "effort", "configRevision", "credentialRevision", "effectiveAt", "routingScope"]) &&
@@ -172,7 +192,7 @@ export function isTaskDiff(value: unknown): value is TaskDiff {
       bounded(value.text, 65536) && value.unavailableReason === null);
 }
 export interface TaskCommandMap {
-  active_context_set: { params: { projectId: string; sessionId: string; selection: AiSelection; expectedContextRevision: number }; data: ActiveTaskContext };
+  active_context_set: { params: { projectId: string | null; sessionId: string | null; selection: AiSelection | null; expectedContextRevision: number }; data: ActiveContextState };
   session_create: { params: { projectId: string; expectedProjectRevision: number; clientRequestId: string }; data: SessionReceipt };
   session_find_by_request: { params: { projectId: string; clientRequestId: string }; data: SessionView | null };
   sessions_list: { params: { projectId: string; cursor?: string; limit?: number }; data: { items: SessionView[]; nextCursor: string | null } };
@@ -192,9 +212,9 @@ export interface TaskCommandMap {
   task_change_get: { params: { taskId: string; changeId: string }; data: TaskDiff };
   // S3-07: bound to server-side active context; no arbitrary IDs/config/cwd.
   task_start_from_active: { params: { expectedContextRevision: number; clientRequestId: string; prompt: string }; data: OverlayTaskReceipt };
-  overlay_task_get: { params: Record<string, never>; data: { context: ActiveTaskContext | null; task: OverlayTaskView | null } };
+  overlay_task_get: { params: Record<string, never>; data: OverlayTaskState };
   overlay_task_find_by_request: { params: { expectedContextRevision: number; clientRequestId: string }; data: OverlayTaskView | null };
   overlay_task_cancel: { params: { expectedContextRevision: number; expectedTaskRevision: number }; data: CancelReceipt };
 }
 
-// S3-06 opens bounded result reads to main. Overlay commands remain closed.
+// S3-07 opens only server-bound submission, minimal feedback and cancellation to overlay.

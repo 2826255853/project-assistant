@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::Manager;
+pub(crate) mod active;
 pub(crate) mod results;
 
 #[derive(Default)]
@@ -262,6 +263,7 @@ pub struct TaskStartRequest {
     pub selection: Option<crate::providers::Selection>,
     pub prompt: String,
 }
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskFindRequest {
@@ -587,7 +589,6 @@ pub(crate) fn start(
     request: TaskStartRequest,
     correlation: &str,
 ) -> Result<TaskReceipt, ErrorCode> {
-    crate::providers::config_state(app)?;
     let credentials = app.state::<CredentialsState>();
     if !credentials.health() {
         return Err(ErrorCode::CredentialsUnavailable);
@@ -596,6 +597,21 @@ pub(crate) fn start(
         .operation
         .lock()
         .map_err(|_| ErrorCode::CredentialsStorageFailed)?;
+    app_state::with_state(app, |state| {
+        let receipt = admit(app, request, "main", correlation)?;
+        active::bind_task(state, &receipt.task);
+        app_state::publish_locked(app, state, correlation.to_owned());
+        Ok(receipt)
+    })
+}
+
+fn admit(
+    app: &tauri::AppHandle,
+    request: TaskStartRequest,
+    origin: &'static str,
+    correlation: &str,
+) -> Result<TaskReceipt, ErrorCode> {
+    crate::providers::config_state(app)?;
     let prompt = request.prompt.clone();
     let input = TaskStartInput {
         project_id: request.project_id,
@@ -607,7 +623,7 @@ pub(crate) fn start(
         expected_global_revision: request.expected_global_revision,
         selection: request.selection,
         prompt: request.prompt,
-        origin_window: "main",
+        origin_window: origin,
     };
     let receipt = app
         .state::<StorageState>()
@@ -619,7 +635,6 @@ pub(crate) fn start(
             ))
         })
         .map_err(map_storage)??;
-    drop(_guard);
     if !receipt.duplicate {
         if let Err(error) = app.state::<TaskRuntimeState>().start_admitted(
             app,
@@ -641,6 +656,7 @@ pub(crate) fn start(
     }
     Ok(receipt)
 }
+
 pub(crate) fn find(
     app: &tauri::AppHandle,
     request: TaskFindRequest,

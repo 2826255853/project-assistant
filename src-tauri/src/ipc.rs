@@ -126,6 +126,10 @@ pub enum ErrorCode {
     TaskNotFound,
     #[serde(rename = "PA_TASK_CONFLICT_REVISION")]
     TaskConflictRevision,
+    #[serde(rename = "PA_TASK_CONTEXT_STALE")]
+    TaskContextStale,
+    #[serde(rename = "PA_APPROVAL_OPERATION_MISMATCH")]
+    ApprovalOperationMismatch,
     #[serde(rename = "PA_APPROVAL_NOT_PENDING")]
     ApprovalNotPending,
     #[serde(rename = "PA_APPROVAL_EXPIRED")]
@@ -412,6 +416,16 @@ impl ErrorCode {
                 ErrorCategory::Conflict,
                 "任务或会话状态已变化。",
                 "请重新读取权威状态后再操作。",
+            ),
+            Self::TaskContextStale => (
+                ErrorCategory::Conflict,
+                "活动任务上下文已变化。",
+                "请返回主窗口重新确认项目、会话和 AI 配置后再提交。",
+            ),
+            Self::ApprovalOperationMismatch => (
+                ErrorCategory::Permission,
+                "审批操作与当前任务不匹配。",
+                "请从主窗口重新查看当前任务的审批请求。",
             ),
             Self::ApprovalNotPending => (
                 ErrorCategory::Conflict,

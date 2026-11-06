@@ -59,6 +59,8 @@ const catalog = {
   PA_SESSION_BUSY: ["conflict", "会话仍有未结束的任务。", "请等待任务进入终态后重试。", true],
   PA_TASK_NOT_FOUND: ["validation", "任务记录不存在。", "请重新读取当前会话的任务列表。"],
   PA_TASK_CONFLICT_REVISION: ["conflict", "任务或会话状态已变化。", "请重新读取权威状态后再操作。", true],
+  PA_TASK_CONTEXT_STALE: ["conflict", "活动任务上下文已变化。", "请返回主窗口重新确认项目、会话和 AI 配置后再提交。"],
+  PA_APPROVAL_OPERATION_MISMATCH: ["permission", "审批操作与当前任务不匹配。", "请从主窗口重新查看当前任务的审批请求。"],
   PA_APPROVAL_NOT_PENDING: ["conflict", "审批已决定或当前不可决策。", "请重新查询审批和任务状态；不会重发决定。"],
   PA_APPROVAL_EXPIRED: ["conflict", "审批已过期，操作未获授权。", "请重新查询任务状态；旧审批不能再次使用。"],
   PA_APPROVAL_BINDING_MISMATCH: ["permission", "审批与任务、窗口或操作不匹配。", "请从主窗口重新读取本任务的审批。"],

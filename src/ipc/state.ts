@@ -13,14 +13,14 @@ export function isOverlayView(value: unknown): value is OverlayView {
     typeof value.trayReady === "boolean" && [value.shortcutError, value.windowError].every(v => v === null || (typeof v === "string" && /^PA_[A-Z0-9_]{1,96}$/.test(v)));
 }
 function isContext(value: unknown): value is ActiveContext {
-  return isRecord(value) && [value.projectId, value.sessionId, value.profileId].every(identifier) &&
+  return isRecord(value) && counter(value.contextRevision) && value.contextRevision > 0 && [value.projectId, value.sessionId, value.profileId].every(identifier) &&
     typeof value.modelId === "string" && bytes(value.modelId) > 0 && bytes(value.modelId) <= 128 && !/[\u0000-\u001f]/.test(value.modelId) &&
     (value.effort === null || identifier(value.effort));
 }
 export function isAppStatus(value: unknown): value is AppStatus {
   const ids = ["desktop", "ipc", "events", "overlay", "storage", "settings", "logging", "credentials", "providers", "codex", "projects", "tasks"];
   if (!isRecord(value) || value.apiVersion !== 1 || !cursorId(value.streamId) || !counter(value.sequence) || !isConfigState(value.configState) ||
-    value.taskStatus !== "idle" || !isOverlayView(value.overlay) || !(value.activeContext === null || isContext(value.activeContext)) || !(value.activeProject === null || isActiveProject(value.activeProject)) ||
+    !counter(value.activeContextRevision) || !(value.focusTaskId === null || (typeof value.focusTaskId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.focusTaskId))) || !counter(value.focusTaskRevision) || value.taskStatus !== "idle" || !isOverlayView(value.overlay) || !(value.activeContext === null || isContext(value.activeContext)) || !(value.activeProject === null || isActiveProject(value.activeProject)) ||
     !Array.isArray(value.services) || value.services.length !== ids.length || !isRecord(value.ccSwitch)) return false;
   const cc = value.ccSwitch;
   return cc.management === "user_manual" && cc.integration === "disabled" && cc.readSupported === false && cc.switchSupported === false &&

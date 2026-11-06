@@ -31,7 +31,9 @@ test("all nine provider commands have explicit main-only permissions",async()=>{
  const overlay=JSON.parse(await readFile(new URL("../../src-tauri/capabilities/overlay.json",import.meta.url),"utf8"));
  const lib=await readFile(new URL("../../src-tauri/src/lib.rs",import.meta.url),"utf8");
  for(const n of names){assert.ok(main.permissions.includes("allow-"+n.replaceAll("_","-")));assert.ok(!overlay.permissions.includes("allow-"+n.replaceAll("_","-")));assert.match(lib,new RegExp("async fn "+n));}
- assert.ok(!overlay.permissions.some(p=>/^allow-(session|task|approvals)/.test(p)));
+ const overlayTaskCommands=["task-start-from-active","overlay-task-get","overlay-task-find-by-request","overlay-task-cancel"];
+ for(const permission of overlay.permissions.filter(p=>/^allow-(session|task|approvals)/.test(p)))assert.ok(overlayTaskCommands.includes(permission.slice("allow-".length)),permission);
+ for(const forbidden of ["allow-session-create","allow-task-start","allow-task-get","allow-task-content-get","allow-approvals-get","allow-approval-decide"])assert.ok(!overlay.permissions.includes(forbidden));
  assert.ok(main.permissions.includes("allow-approval-decide"));
  assert.ok(!overlay.permissions.includes("allow-approval-decide"));
 });
