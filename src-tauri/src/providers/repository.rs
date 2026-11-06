@@ -164,6 +164,9 @@ pub fn set_enabled(app: &tauri::AppHandle, v: Enabled, id: &str) -> Result<Profi
         if r.profile.enabled == v.enabled {
             return Ok(r.profile);
         }
+        if busy(&tx, &v.profile_id)? {
+            return Err(ErrorCode::CredentialBusy);
+        }
         if v.expected_revision >= MAX_REVISION {
             return Err(ErrorCode::RevisionConflict);
         }

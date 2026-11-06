@@ -17,6 +17,29 @@ pub(crate) struct Queue {
     pub(super) pending: VecDeque<String>,
     running: bool,
     cancels: HashMap<String, Cancel>,
+    closing: bool,
+}
+
+impl ProvidersState {
+    pub(crate) fn begin_shutdown(&self) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.closing = true;
+            for cancel in queue.cancels.values() {
+                cancel.cancel();
+            }
+        }
+    }
+
+    pub(crate) fn wait_for_shutdown(&self) {
+        while self
+            .queue
+            .lock()
+            .map(|queue| queue.running)
+            .unwrap_or(false)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 pub(crate) fn executable() -> Result<Executable, ErrorCode> {
@@ -130,6 +153,9 @@ pub fn submit(
         .queue
         .lock()
         .map_err(|_| ErrorCode::InternalUnexpected)?;
+    if q.closing {
+        return Err(ErrorCode::ProcessExitFailed);
+    }
     let id = with_db(app, |c| insert_job(c, &s, kind, correlation))?;
     q.pending.push_back(id.clone());
     q.cancels.insert(id.clone(), Cancel::default());
@@ -365,6 +391,44 @@ pub(crate) fn execute<B: Backend>(b: &B, j: &Job, cancel: &Cancel) -> Result<(),
     let cr = initial.profile.profile.credential.revision;
     let capability_version = initial.version;
     let effort = initial.effort;
+    // Do not queue a candidate behind an owned task while reporting checking.
+    // The same admission/commit transactions still recheck occupancy below.
+    if j.kind == "switch"
+        && b.db(|c| {
+            let old = default_selection(c, None)?;
+            Ok(repo::busy(c, &j.selection.profile_id)?
+                || old
+                    .as_ref()
+                    .map(|s| repo::busy(c, &s.profile_id))
+                    .transpose()?
+                    .unwrap_or(false))
+        })?
+    {
+        set_phase(b, j, "waiting_for_idle")?;
+        let started = Instant::now();
+        loop {
+            if cancel.is_cancelled() {
+                return b.db(|c| finish_failure(c, j, ErrorCode::ProcessCancelled));
+            }
+            let busy = b.db(|c| {
+                repo::validate_selection(c, &j.selection, now()?)?;
+                let old = default_selection(c, None)?;
+                Ok(repo::busy(c, &j.selection.profile_id)?
+                    || old
+                        .as_ref()
+                        .map(|s| repo::busy(c, &s.profile_id))
+                        .transpose()?
+                        .unwrap_or(false))
+            })?;
+            if !busy {
+                break;
+            }
+            if started.elapsed() >= Duration::from_secs(5 * 60) {
+                return b.db(|c| finish_failure(c, j, ErrorCode::CodexRequestTimeout));
+            }
+            b.wait();
+        }
+    }
     if let Err(error) = b.probe(&j.selection, &effort, cancel.clone()) {
         return b.db(|c| finish_failure(c, j, error));
     }

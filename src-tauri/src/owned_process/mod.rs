@@ -18,7 +18,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -242,10 +242,12 @@ fn acceptance_selection(selection: Selection) -> Result<Selection> {
     {
         let mut selection = selection;
         if std::env::var("PA_IPC_VERIFY").as_deref() == Ok("1")
-            && std::env::var("PA_TASK_DESKTOP_FIXTURE_ENDPOINT")
-                .ok()
-                .as_deref()
-                == Some(selection.endpoint.as_str())
+            && [
+                "PA_TASK_DESKTOP_FIXTURE_ENDPOINT",
+                "PA_TASK_DESKTOP_SECOND_ENDPOINT",
+            ]
+            .iter()
+            .any(|name| std::env::var(name).ok().as_deref() == Some(selection.endpoint.as_str()))
         {
             let url = Url::parse(&selection.endpoint).map_err(|_| Failure::Unsafe)?;
             if url.scheme() != "https" || url.host_str() != Some("127.0.0.1") {
@@ -356,10 +358,9 @@ pub(crate) fn catalog_candidate(
     revision: i64,
 ) -> std::result::Result<Vec<CatalogEntry>, ErrorCode> {
     let state = app.state::<OwnedProcessState>();
-    let _serial = state
-        .serial
-        .lock()
-        .map_err(|_| ErrorCode::ProcessExitFailed)?;
+    let cancel = Cancel::default();
+    let _operation = state.register_operation(cancel.clone())?;
+    let _serial = state.lock_serial_cancellable(&cancel)?;
     if state.blocked.load(Ordering::Acquire) {
         return Err(ErrorCode::ProcessExitFailed);
     }
@@ -413,7 +414,7 @@ pub(crate) fn catalog_candidate(
         selection,
         secret,
         None,
-        Cancel::default(),
+        cancel,
         Duration::from_secs(45),
     )
     .map_err(Failure::code)?;
@@ -597,8 +598,61 @@ pub(crate) struct OwnedProcessState {
     root: Mutex<Option<PathBuf>>,
     serial: Mutex<()>,
     blocked: AtomicBool,
+    lifecycle: Mutex<OwnedLifecycle>,
+}
+#[derive(Default)]
+struct OwnedLifecycle {
+    closing: bool,
+    operations: HashMap<String, Cancel>,
+}
+struct OwnedOperation<'a> {
+    state: &'a OwnedProcessState,
+    id: String,
+}
+impl Drop for OwnedOperation<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut lifecycle) = self.state.lifecycle.lock() {
+            lifecycle.operations.remove(&self.id);
+        }
+    }
 }
 impl OwnedProcessState {
+    fn register_operation(
+        &self,
+        cancel: Cancel,
+    ) -> std::result::Result<OwnedOperation<'_>, ErrorCode> {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .map_err(|_| ErrorCode::ProcessExitFailed)?;
+        if lifecycle.closing {
+            return Err(ErrorCode::ProcessCancelled);
+        }
+        let id = crate::ipc::correlation_id();
+        lifecycle.operations.insert(id.clone(), cancel);
+        Ok(OwnedOperation { state: self, id })
+    }
+
+    pub(crate) fn begin_shutdown(&self) {
+        if let Ok(mut lifecycle) = self.lifecycle.lock() {
+            lifecycle.closing = true;
+            for cancel in lifecycle.operations.values() {
+                cancel.cancel();
+            }
+        }
+    }
+
+    pub(crate) fn wait_for_shutdown(&self) {
+        while self
+            .lifecycle
+            .lock()
+            .map(|lifecycle| !lifecycle.operations.is_empty())
+            .unwrap_or(false)
+        {
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     pub fn initialize(&self, app_data_dir: &Path) -> std::result::Result<(), ErrorCode> {
         let parent = home::check_path(app_data_dir).map_err(Failure::code)?;
         let root = parent.join("owned-processes");
@@ -671,10 +725,8 @@ pub(crate) fn probe_candidate(
     cancel: Cancel,
 ) -> std::result::Result<ProbeEvidence, ErrorCode> {
     let state = app.state::<OwnedProcessState>();
-    let _serial = state
-        .serial
-        .lock()
-        .map_err(|_| ErrorCode::ProcessExitFailed)?;
+    let _operation = state.register_operation(cancel.clone())?;
+    let _serial = state.lock_serial_cancellable(&cancel)?;
     if state.blocked.load(Ordering::Acquire) {
         return Err(ErrorCode::ProcessExitFailed);
     }

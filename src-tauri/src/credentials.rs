@@ -351,6 +351,9 @@ fn platform_storage_failure(failure: platform::Failure) -> storage::StorageError
 fn wait_for_idle(app: &tauri::AppHandle, profile_id: &str) -> Result<(), ErrorCode> {
     let started = Instant::now();
     loop {
+        if app.state::<crate::tasks::TaskRuntimeState>().is_closing() {
+            return Err(ErrorCode::ProcessCancelled);
+        }
         let active = app
             .state::<storage::StorageState>()
             .with_storage(|storage| storage.profiles().has_active_credential_task(profile_id))
@@ -893,8 +896,15 @@ fn mutate(
             }))
         })
         .map_err(map_storage_failure)??;
-    // Do not hold the database lock while waiting: tasks must be able to finish.
+    // Queued admitted workers need this mutex to read their frozen credential.
+    // Release it while waiting, then recheck revision/occupancy in the mutation
+    // transaction after reacquiring it; a competing admission fails closed.
+    drop(operation);
     wait_for_idle(app, profile_id)?;
+    let operation = state
+        .operation
+        .lock()
+        .map_err(|_| ErrorCode::CredentialsStorageFailed)?;
     let result = app
         .state::<storage::StorageState>()
         .with_storage(|storage| {
@@ -948,6 +958,34 @@ pub fn remove(
         None,
         correlation_id,
     )
+}
+
+// Exact fixture database only; never enumerate or delete unrelated vault entries.
+#[cfg(all(test, windows))]
+pub(crate) fn cleanup_task_desktop_credentials(db: &mut storage::Storage) {
+    let ids = db
+        .connection
+        .prepare("SELECT id FROM provider_profiles")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    for id in ids {
+        let current = read_binding(db, &id).unwrap();
+        assert!(current.origin.starts_with("https://127.0.0.1:"));
+        for revision in 1..=current.credential_revision {
+            let mut candidate = current.clone();
+            candidate.credential_revision = revision;
+            candidate.credential_ref = Some(logical_ref(&id, revision));
+            if let Some(blob) = platform::read(&candidate).unwrap() {
+                let secret = platform::secret(&blob, &candidate).unwrap();
+                assert!(secret.as_bytes().starts_with(b"synthetic-ui-"));
+                platform::delete(&candidate).unwrap();
+                assert!(platform::read(&candidate).unwrap().is_none());
+            }
+        }
+    }
 }
 
 #[cfg(all(test, windows))]

@@ -7,8 +7,11 @@ export async function controlledSite(label, key, {tls} = {}) {
   const requests = [];
   const held = [];
   let mode = "ok";
+  let holdNext = false;
+  let modes = [];
   let redirect;
   const handler = async (request, response) => {
+    const requestMode = modes.shift() ?? mode;
     let bytes = 0;
     const chunks = [];
     for await (const chunk of request) {
@@ -24,23 +27,23 @@ export async function controlledSite(label, key, {tls} = {}) {
       effort: payload.reasoning?.effort,
       toolNames: (payload.tools ?? []).map(tool => tool.name).filter(Boolean),
       containsTaskPrompt: JSON.stringify(payload).includes("S3_04_PROMPT_SENTINEL") });
-    if (mode === "redirect") { response.writeHead(307, { location: redirect }).end(); return; }
-    if (!keyMatches || mode === "unauthorized" || mode === "echo-secret-error") {
-      response.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: mode === "echo-secret-error" ? key : "Synthetic authentication failure", type: "invalid_request_error" } }));
+    if (requestMode === "redirect") { response.writeHead(307, { location: redirect }).end(); return; }
+    if (!keyMatches || requestMode === "unauthorized" || requestMode === "echo-secret-error") {
+      response.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: requestMode === "echo-secret-error" ? key : "Synthetic authentication failure", type: "invalid_request_error" } }));
       return;
     }
     if (!request.url?.endsWith("/responses")) { response.writeHead(404).end(); return; }
-    if (mode === "hang") return; // Used only to verify client event timeouts and process cleanup.
+    if (requestMode === "hang") return; // Used only to verify client event timeouts and process cleanup.
     response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     const responseId = `resp_${randomUUID()}`;
     const itemId = `msg_${randomUUID()}`;
-    const text = mode === "echo-secret-success" ? key : mode === "long" ? "S3_LONG_REPLY_<img src=x>_".repeat(3500) : `CONTROLLED_${label}_OK`;
+    const text = requestMode === "echo-secret-success" ? key : requestMode === "long" ? "S3_LONG_REPLY_<img src=x>_".repeat(3500) : `CONTROLLED_${label}_OK`;
     const item = { id: itemId, type: "message", role: "assistant", status: "in_progress", content: [] };
     const base = { id: responseId, object: "response", created_at: Math.floor(Date.now() / 1000), model: payload.model, status: "in_progress", output: [] };
     let sequence = 0;
     const event = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...data })}\n\n`);
     event("response.created", { response: base });
-    if (mode === "approval" && !JSON.stringify(payload.input).includes("function_call_output")) {
+    if (requestMode === "approval" && !JSON.stringify(payload.input).includes("function_call_output")) {
       const args = JSON.stringify({cmd: "Get-Location", workdir: redirect, sandbox_permissions: "require_escalated", justification: "Synthetic print-only approval acceptance."});
       const call = {id: `fc_${randomUUID()}`, type: "function_call", call_id: `call_${randomUUID()}`, name: "exec_command", arguments: args, status: "completed"};
       event("response.output_item.added", {output_index: 0, item: {...call, arguments: "", status: "in_progress"}});
@@ -66,12 +69,13 @@ export async function controlledSite(label, key, {tls} = {}) {
         usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } } });
       response.end();
     };
-    if (mode === "hold") held.push(finish); else finish();
+    if (requestMode === "hold" || holdNext) { holdNext = false; held.push(finish); } else finish();
   };
   const server = tls ? createTlsServer(tls, handler) : createServer(handler);
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   const baseUrl = `${tls ? "https" : "http"}://127.0.0.1:${server.address().port}/v1`;
-  return { baseUrl, requests, setMode: (value, target) => { mode = value; redirect = target; },
+  return { baseUrl, requests, setMode: (value, target) => { mode = value === "hold-first" ? "ok" : value; holdNext = value === "hold-first"; redirect = target; },
+    setSequence: values => { modes = [...values]; },
     release: () => { held.splice(0).forEach((finish) => finish()); },
     close: async () => { server.closeAllConnections(); await new Promise((done) => server.close(done)); } };
 }

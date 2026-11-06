@@ -308,9 +308,11 @@ fn cancelling_while_waiting_does_not_stop_task_or_change_defaults() {
     let b = f.seed("B");
     f.run(&a, "switch", Cancel::default());
     occupy(&f, &a);
+    let probes_before_wait = f.probes.get();
     let cancel = Cancel::default();
     *f.cancel_wait.borrow_mut() = Some(cancel.clone());
     assert_eq!(f.outcome(f.run(&b, "switch", cancel)), "unchanged");
+    assert_eq!(f.probes.get(), probes_before_wait);
     assert_eq!(f.defaults(), Some(a));
     assert_eq!(
         f.db(|c| c
@@ -759,7 +761,7 @@ fn required_nullable_fields_cannot_be_omitted() {
     }
 }
 #[test]
-fn global_default_clear_recovers_blocked_state_without_reusing_evidence() {
+fn global_default_clear_keeps_failed_recovery_blocked_until_verified_switch() {
     let f = Fixture::new();
     let a = f.seed("A");
     f.run(&a, "switch", Cancel::default());
@@ -776,8 +778,19 @@ fn global_default_clear_recovers_blocked_state_without_reusing_evidence() {
     assert!(f.defaults().is_none());
     assert_eq!(
         f.db(|c| repo::active(c, now()?)).unwrap(),
-        (None, "unconfigured".into())
+        (None, "error".into())
     );
+    assert_eq!(
+        f.db(|c| {
+            let tx = c.transaction().map_err(sql)?;
+            snapshots::capture_in_transaction(&tx, Some(&a), None)
+        })
+        .err(),
+        Some(ErrorCode::ProviderRollbackFailed)
+    );
+    f.run(&a, "test", Cancel::default());
+    assert_eq!(f.db(|c| repo::active(c, now()?)).unwrap().1, "error");
+    assert_eq!(f.outcome(f.run(&a, "switch", Cancel::default())), "applied");
 }
 #[test]
 fn unrelated_settings_update_preserves_applied_ai_default_and_next_restart() {

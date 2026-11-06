@@ -253,6 +253,34 @@ fn queued_task_cancellation_and_failed_cancel_commit_do_not_start_or_cancel_othe
 }
 
 #[test]
+fn shutdown_cancels_registered_candidates_waiting_for_serial_and_closes_admission() {
+    use std::sync::{Arc, Barrier};
+    let owned = Arc::new(OwnedProcessState::default());
+    let barrier = Arc::new(Barrier::new(3));
+    let held = owned.lock_serial().unwrap();
+    let workers: Vec<_> = (0..2)
+        .map(|_| {
+            let owned = owned.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let cancel = Cancel::default();
+                let _registration = owned.register_operation(cancel.clone()).unwrap();
+                barrier.wait();
+                owned.lock_serial_cancellable(&cancel).err()
+            })
+        })
+        .collect();
+    barrier.wait();
+    owned.begin_shutdown();
+    for worker in workers {
+        assert_eq!(worker.join().unwrap(), Some(ErrorCode::ProcessCancelled));
+    }
+    assert!(owned.register_operation(Cancel::default()).is_err());
+    owned.wait_for_shutdown();
+    drop(held);
+}
+
+#[test]
 fn approval_summary_rejects_controls_oversize_and_known_secret_markers() {
     assert!(safe_approval_text(
         "pwsh.exe -NoProfile -Command Get-Location",

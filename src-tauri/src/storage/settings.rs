@@ -305,7 +305,9 @@ impl SettingsRepository<'_> {
             .iter()
             .any(|v| matches!(v, Change::AiDefaults(None)))
         {
-            transaction.execute("UPDATE ai_runtime SET blocked=0,profile_id=NULL,profile_revision=NULL,model_id=NULL,effort=NULL,credential_revision=NULL,adapter_version=NULL,tested_at=NULL WHERE id=1",[]).map_err(sql)?;
+            // Clearing a default cannot certify a failed rollback as repaired.
+            // Preserve blocked until an explicit verified switch commits.
+            transaction.execute("UPDATE ai_runtime SET profile_id=NULL,profile_revision=NULL,model_id=NULL,effort=NULL,credential_revision=NULL,adapter_version=NULL,tested_at=NULL WHERE id=1",[]).map_err(sql)?;
         }
         transaction
             .execute(

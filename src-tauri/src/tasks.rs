@@ -48,7 +48,31 @@ struct TaskOutput {
     changes: Vec<results::StoredChange>,
 }
 
+struct WorkerRegistration {
+    app: tauri::AppHandle,
+    task_id: String,
+    correlation: String,
+}
+impl Drop for WorkerRegistration {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            finish_task_failure(
+                &self.app,
+                &self.task_id,
+                &self.correlation,
+                ErrorCode::ProcessExitFailed,
+            );
+        }
+        if let Ok(mut workers) = self.app.state::<TaskRuntimeState>().workers.lock() {
+            workers.remove(&self.task_id);
+        }
+    }
+}
+
 impl TaskRuntimeState {
+    pub(crate) fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
+    }
     fn append(&self, task_id: &str, channel: &str, text: &str) -> Result<(), ErrorCode> {
         if text.len() > 64 * 1024 || !matches!(channel, "reply" | "progress") {
             return Err(ErrorCode::InputTooLarge);
@@ -93,21 +117,23 @@ impl TaskRuntimeState {
         Ok(())
     }
 
-    pub(crate) fn cancel_all(&self) {
+    pub(crate) fn begin_shutdown(&self) {
         self.closing.store(true, Ordering::Release);
         if let Ok(workers) = self.workers.lock() {
             for cancel in workers.values() {
                 cancel.cancel();
             }
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
+    }
+
+    pub(crate) fn cancel_all(&self) {
+        self.begin_shutdown();
         loop {
             if self
                 .workers
                 .lock()
                 .map(|workers| workers.is_empty())
                 .unwrap_or(true)
-                || Instant::now() >= deadline
             {
                 break;
             }
@@ -143,6 +169,11 @@ impl TaskRuntimeState {
         let spawned = std::thread::Builder::new()
             .name("pa-owned-task".into())
             .spawn(move || {
+                let _registration = WorkerRegistration {
+                    app: app.clone(),
+                    task_id: worker_task_id.clone(),
+                    correlation: worker_correlation.clone(),
+                };
                 let worker_cancel = cancel.clone();
                 let result = run_admitted(
                     &app,
@@ -190,9 +221,6 @@ impl TaskRuntimeState {
                             }
                         }
                     }
-                }
-                if let Ok(mut workers) = app.state::<TaskRuntimeState>().workers.lock() {
-                    workers.remove(&worker_task_id);
                 }
             });
         if spawned.is_err() {
@@ -611,6 +639,13 @@ fn admit(
     origin: &'static str,
     correlation: &str,
 ) -> Result<TaskReceipt, ErrorCode> {
+    if app.state::<TaskRuntimeState>().is_closing()
+        || app
+            .state::<crate::owned_process::OwnedProcessState>()
+            .is_blocked()
+    {
+        return Err(ErrorCode::ProcessExitFailed);
+    }
     crate::providers::config_state(app)?;
     let prompt = request.prompt.clone();
     let input = TaskStartInput {

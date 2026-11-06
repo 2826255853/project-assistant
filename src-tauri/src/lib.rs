@@ -1525,7 +1525,20 @@ pub fn run() {
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
+                // Close both admissions before waiting: a provider candidate may
+                // be queued behind a task on the owned-process serial lock.
+                handle.state::<tasks::TaskRuntimeState>().begin_shutdown();
+                handle.state::<providers::ProvidersState>().begin_shutdown();
+                handle
+                    .state::<owned_process::OwnedProcessState>()
+                    .begin_shutdown();
                 handle.state::<tasks::TaskRuntimeState>().cancel_all();
+                handle
+                    .state::<providers::ProvidersState>()
+                    .wait_for_shutdown();
+                handle
+                    .state::<owned_process::OwnedProcessState>()
+                    .wait_for_shutdown();
             }
         }),
         Err(_) => {
@@ -1544,4 +1557,90 @@ fn task_desktop_acceptance() {
     assert_eq!(std::env::var("PA_IPC_VERIFY").as_deref(), Ok("1"));
     assert!(std::env::var_os("PA_OVERLAY_VERIFY_DIR").is_some());
     run();
+}
+
+#[cfg(all(test, windows))]
+#[test]
+#[ignore = "isolated startup recovery and exact synthetic vault cleanup for verify:task-concurrency"]
+fn task_desktop_recovery() {
+    let directory = std::path::PathBuf::from(std::env::var_os("PA_TASK_RECOVERY_DIR").unwrap());
+    let parent = directory
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy();
+    assert!(parent.starts_with("pa-task-ui-"));
+    assert!(matches!(
+        directory.file_name().unwrap().to_str(),
+        Some("dev" | "built")
+    ));
+    let mut db = storage::Storage::open(&directory).unwrap();
+    let mode = std::env::var("PA_TASK_RECOVERY_MODE").unwrap();
+    if mode != "cleanup" {
+        if mode == "exit" {
+            assert!(
+                std::fs::read_dir(directory.join("owned-processes"))
+                    .unwrap()
+                    .next()
+                    .is_none()
+            );
+            let unfinished: i64 = db.connection.query_row("SELECT count(*) FROM provider_operations WHERE phase IN ('checking','waiting_for_idle','applying','rolling_back')", [], |row| row.get(0)).unwrap();
+            assert_eq!(unfinished, 0);
+        }
+        let before: i64 = db
+            .connection
+            .query_row("SELECT count(*) FROM tasks", [], |row| row.get(0))
+            .unwrap();
+        for _ in 0..2 {
+            db.recover_on_startup(&ipc::correlation_id()).unwrap();
+            providers::recover(&mut db.connection).unwrap();
+            owned_process::OwnedProcessState::default()
+                .initialize(&directory)
+                .unwrap();
+        }
+        let status: String = db
+            .connection
+            .query_row(
+                "SELECT status FROM tasks ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status,
+            if mode == "exit" {
+                "cancelled"
+            } else {
+                "interrupted"
+            }
+        );
+        let after: i64 = db
+            .connection
+            .query_row("SELECT count(*) FROM tasks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, after);
+        let pending: i64 = db
+            .connection
+            .query_row(
+                "SELECT count(*) FROM approvals WHERE decision='pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 0);
+        let operations: i64 = db.connection.query_row("SELECT count(*) FROM provider_operations WHERE phase IN ('checking','waiting_for_idle','applying','rolling_back')", [], |row| row.get(0)).unwrap();
+        assert_eq!(operations, 0);
+        assert!(
+            std::fs::read_dir(directory.join("owned-processes"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        println!(
+            "LIFECYCLE_EVIDENCE:{}",
+            serde_json::json!({"mode":mode,"taskCountUnchanged":true,"pendingApprovals":pending,"ownedResourcesCleaned":true,"lastTaskStatus":status})
+        );
+    }
+    credentials::cleanup_task_desktop_credentials(&mut db);
 }

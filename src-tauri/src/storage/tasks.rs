@@ -2036,6 +2036,140 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn busy_readonly_and_audit_failures_preserve_pending_work_until_explicit_startup_recovery() {
+        let mut f = Fixture::new();
+        let (task, approval) = f.waiting();
+        let task_count = f.count("tasks");
+        let event_count = f.count("task_events");
+        let audit_count = f.count("audit_events");
+        let blocker = Connection::open(&f.db.path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        f.db.connection
+            .busy_timeout(std::time::Duration::ZERO)
+            .unwrap();
+        assert!(
+            f.db.tasks()
+                .task_cancel(&task.id, task.revision, &crate::ipc::correlation_id())
+                .is_err()
+        );
+        assert!(
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &approval.id,
+                    approval.revision,
+                    task.revision,
+                    &approval.operation_fingerprint,
+                    "main",
+                    ApprovalDecisionInput::Approve,
+                    &crate::ipc::correlation_id()
+                )
+                .is_err()
+        );
+        blocker.execute_batch("ROLLBACK").unwrap();
+        f.db.connection
+            .execute_batch("PRAGMA query_only=ON")
+            .unwrap();
+        assert!(
+            f.db.recover_on_startup(&crate::ipc::correlation_id())
+                .is_err()
+        );
+        f.db.connection.execute_batch("PRAGMA query_only=OFF; CREATE TEMP TRIGGER s38_audit_failure BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'synthetic-s38'); END;").unwrap();
+        assert!(
+            f.db.tasks()
+                .task_cancel(&task.id, task.revision, &crate::ipc::correlation_id())
+                .is_err()
+        );
+        assert!(
+            f.db.recover_on_startup(&crate::ipc::correlation_id())
+                .is_err()
+        );
+        assert_eq!(
+            f.db.tasks().task_get(&task.id).unwrap().revision,
+            task.revision
+        );
+        assert_eq!(
+            f.db.tasks().approvals_get(&task.id).unwrap()[0].decision,
+            "pending"
+        );
+        assert_eq!(f.count("task_events"), event_count);
+        assert_eq!(f.count("audit_events"), audit_count);
+        f.db.connection
+            .execute_batch("DROP TRIGGER s38_audit_failure")
+            .unwrap();
+        f.db.recover_on_startup(&crate::ipc::correlation_id())
+            .unwrap();
+        let revision = f.db.tasks().task_get(&task.id).unwrap().revision;
+        f.db.recover_on_startup(&crate::ipc::correlation_id())
+            .unwrap();
+        let recovered = f.db.tasks().task_get(&task.id).unwrap();
+        assert_eq!(recovered.status, "interrupted");
+        assert_eq!(recovered.revision, revision);
+        assert_eq!(f.count("tasks"), task_count);
+        assert_ne!(
+            f.db.tasks().approvals_get(&task.id).unwrap()[0].decision,
+            "pending"
+        );
+    }
+
+    #[test]
+    fn sqlite_full_during_approval_and_recovery_cannot_commit_partial_state() {
+        let mut f = Fixture::new();
+        let (task, approval) = f.waiting();
+        f.db.connection.execute_batch("CREATE TABLE s38_disk_probe(payload BLOB); CREATE TEMP TRIGGER s38_full BEFORE INSERT ON audit_events BEGIN INSERT INTO s38_disk_probe VALUES(zeroblob(1048576)); END;").unwrap();
+        let pages: i64 =
+            f.db.connection
+                .query_row("PRAGMA page_count", [], |row| row.get(0))
+                .unwrap();
+        f.db.connection
+            .pragma_update(None, "max_page_count", pages)
+            .unwrap();
+        let full =
+            f.db.connection
+                .execute("INSERT INTO s38_disk_probe VALUES(zeroblob(1048576))", [])
+                .unwrap_err();
+        assert!(
+            matches!(full, rusqlite::Error::SqliteFailure(code, _) if code.code == rusqlite::ErrorCode::DiskFull)
+        );
+        assert!(
+            f.db.tasks()
+                .approval_decide(
+                    &task.id,
+                    &approval.id,
+                    approval.revision,
+                    task.revision,
+                    &approval.operation_fingerprint,
+                    "main",
+                    ApprovalDecisionInput::Approve,
+                    &crate::ipc::correlation_id()
+                )
+                .is_err()
+        );
+        assert!(
+            f.db.recover_on_startup(&crate::ipc::correlation_id())
+                .is_err()
+        );
+        assert_eq!(
+            f.db.tasks().task_get(&task.id).unwrap().revision,
+            task.revision
+        );
+        assert_eq!(
+            f.db.tasks().approvals_get(&task.id).unwrap()[0].decision,
+            "pending"
+        );
+        assert_eq!(f.count("s38_disk_probe"), 0);
+        f.db.connection
+            .execute_batch("DROP TRIGGER s38_full")
+            .unwrap();
+        f.db.recover_on_startup(&crate::ipc::correlation_id())
+            .unwrap();
+        assert_eq!(
+            f.db.tasks().task_get(&task.id).unwrap().status,
+            "interrupted"
+        );
+    }
+
+    #[test]
     fn concurrent_decisions_across_connections_have_one_winner_and_no_second_claim() {
         use std::sync::{Arc, Barrier};
         let mut f = Fixture::new();

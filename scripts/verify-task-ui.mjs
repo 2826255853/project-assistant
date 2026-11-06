@@ -13,17 +13,19 @@ assert.equal(process.platform, "win32");
 assert.ok(process.env.npm_execpath, "Run with npm run verify:task-ui");
 const root = resolve(import.meta.dirname, "..");
 const phase37 = process.argv.includes("--step-3-7");
+const phase38 = process.argv.includes("--step-3-8");
 const overlaySmoke = process.argv.includes("--overlay-smoke") || phase37;
-const step = phase37 ? "3.7" : "3.6";
-const output = join(root, phase37 ? "artifacts/phase-3-7" : "artifacts/phase-3-6");
+const step = phase38 ? "3.8" : phase37 ? "3.7" : "3.6";
+const output = join(root, `artifacts/phase-${step.replace(".", "-")}`);
 await mkdir(output, {recursive: true});
 const temp = await mkdtemp(join(tmpdir(), "pa-task-ui-"));
 const secret = `synthetic-ui-${randomUUID()}`;
+const secondSecret = `synthetic-ui-${randomUUID()}`;
 const report = {step, date: new Date().toISOString(), timezone: "Asia/Shanghai", passed: false,
   syntheticDataOnly: true, officialSource: "reserved-not-tested", checks: [], desktop: [],
   limits: ["Real CLI and WebView with synthetic HTTPS replies/print-only approvals. No real Key/model usage.",
-    "Diff/eviction/gap fixtures are explicit test-only injections, separate from real task evidence.",
-    ...(phase37 ? ["Physical Chinese IME, tray, monitors and DPI remain manual."] : ["Physical IME, tray, monitors and DPI remain manual; overlay task submission remains S3-07."])]};
+    phase38 ? "Event gaps and SQLite failures are test-only injections, separate from observed CLI requests, snapshots and process lifetimes." : "Diff/eviction/gap fixtures are explicit test-only injections, separate from real task evidence.",
+    ...(phase37 || phase38 ? ["Physical Chinese IME, tray, monitors and DPI remain manual."] : ["Physical IME, tray, monitors and DPI remain manual; overlay task submission remains S3-07."])]};
 const npmArgs = args => [process.env.npm_execpath, ...args];
 const children = new Set();
 async function run(label, exe, args, env = {}) {
@@ -33,7 +35,7 @@ async function run(label, exe, args, env = {}) {
   for (const stream of [child.stdout, child.stderr]) stream.on("data", b => { text += b; });
   const code = await new Promise((done, reject) => { child.on("error", reject); child.on("close", done); });
   children.delete(child);
-  assert.ok(!text.includes(secret), `${label}: Key leaked`);
+  assert.ok(!text.includes(secret) && !text.includes(secondSecret), `${label}: Key leaked`);
   await writeFile(join(output, `${label}.log`), text);
   assert.equal(code, 0, `${label} failed; see its artifact log`);
   report.checks.push(label); console.log(`${label}: passed`);
@@ -48,20 +50,38 @@ async function until(read, predicate = Boolean, ms = 60000) {
   while (Date.now() < deadline) { const value = await read(); if (predicate(value)) return value; await delay(200); }
   throw new Error(`Desktop condition timed out during ${typeof verifyStage === "string" ? verifyStage : "desktop startup"}`);
 }
-let site, vite, verifyStage = "desktop setup";
+let site, secondSite, vite, verifyStage = "desktop setup";
+function ownedChildPids(parentPid) {
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+    `$pids=@(Get-CimInstance Win32_Process | Where-Object ParentProcessId -eq ${parentPid} | ForEach-Object ProcessId); ConvertTo-Json -Compress -InputObject $pids`],
+    {windowsHide: true, encoding: "utf8"});
+  assert.equal(result.status, 0); return JSON.parse(result.stdout);
+}
+function childrenStopped(pids) {
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+    `$alive=@(Get-Process -Id ${pids.join(",")} -ErrorAction SilentlyContinue); $alive.Count`], {windowsHide: true, encoding: "utf8"});
+  assert.equal(result.status, 0); return Number(result.stdout.trim()) === 0;
+}
 async function desktop(mode, binary, cli, ca) {
   const dir = join(temp, mode); await mkdir(dir);
   const port = await freePort();
   let processOutput = "";
   const child = spawn(binary, ["task_desktop_acceptance", "--ignored", "--exact", "--nocapture"], {cwd: root, windowsHide: true, env: {
     ...process.env, CODEX_BIN: cli, PA_DESKTOP_MODE: "normal", PA_IPC_VERIFY: "1", PA_PROJECT_PICKER_FIXTURE: "1",
-    PA_OVERLAY_VERIFY_DIR: dir, PA_LOG_VERIFY_DIR: join(dir, "logs"), PA_TASK_DESKTOP_FIXTURE_ENDPOINT: site.baseUrl, PA_TASK_DESKTOP_CA: ca,
+    PA_OVERLAY_VERIFY_DIR: dir, PA_LOG_VERIFY_DIR: join(dir, "logs"), PA_TASK_DESKTOP_FIXTURE_ENDPOINT: site.baseUrl, PA_TASK_DESKTOP_SECOND_ENDPOINT: secondSite?.baseUrl, PA_TASK_DESKTOP_CA: ca,
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`
   }, stdio: ["ignore", "pipe", "pipe"]});
   children.add(child);
   for (const stream of [child.stdout, child.stderr]) stream.on("data", b => { processOutput += b; });
   let socket, overlaySocket, overlayEval, overlayOk, overlayClick, cleanupCredentials;
   const evidence = {mode, passed: false, checks: []};
+  let recoveryDone = false;
+  const recoverFixture = async recoveryMode => {
+    const text = await run(`recovery-${mode}-${recoveryMode}`, binary, ["task_desktop_recovery", "--ignored", "--exact", "--nocapture"],
+      {PA_TASK_RECOVERY_DIR: dir, PA_TASK_RECOVERY_MODE: recoveryMode});
+    if (recoveryMode !== "cleanup") evidence.recovery = JSON.parse(text.match(/LIFECYCLE_EVIDENCE:(.*)/)[1]);
+    recoveryDone = true; evidence.credentialCleanup = true;
+  };
   const record = message => { evidence.checks.push(message); console.log(`desktop-${mode}: ${message}`); };
   try {
     const target = await until(async () => {
@@ -78,7 +98,7 @@ async function desktop(mode, binary, cli, ca) {
     attach(socket);
     const cdp = (method, params = {}, channel = socket) => new Promise((done, reject) => {
       const state = channelStates.get(channel); assert.ok(state, "CDP channel must be attached");
-      const id = ++state.nextId, timer = setTimeout(() => { state.pending.delete(id); reject(new Error(`CDP timeout ${method}`)); }, 30000);
+      const id = ++state.nextId, timer = setTimeout(() => { state.pending.delete(id); reject(new Error(`CDP timeout ${method} during ${verifyStage}`)); }, 30000);
       state.pending.set(id, {done, reject, timer}); channel.send(JSON.stringify({id, method, params}));
     });
     const evaluate = async (expression, channel = socket) => {
@@ -97,7 +117,7 @@ async function desktop(mode, binary, cli, ca) {
     verifyStage = "main WebView bootstrap";
     await until(() => evaluate("Boolean(document.querySelector('.app-shell'))"));
     await click(".nav-item[data-page=tasks]");
-    await until(() => evaluate("document.querySelector('[data-testid=tasks-notice]')?.textContent"), t => t?.includes("还没有登记项目"));
+    await until(() => evaluate("Boolean(document.querySelector('[data-testid=task-send]'))"));
     assert.equal(await evaluate("document.querySelector('[data-testid=task-send]').disabled"), true);
     record("No-context submission blocked in real WebView");
     const overlayTarget = await until(async () => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t => t.url.includes("window=overlay")));
@@ -117,9 +137,13 @@ async function desktop(mode, binary, cli, ca) {
     // Match the gateway acceptance fixture: an explicit synthetic repository boundary.
     await mkdir(join(project.absolutePath, ".git"));
     const saved = await ok("provider_save", {profileId: null, expectedRevision: null, name: "UI synthetic relay", endpoint: site.baseUrl, defaultModel: null, defaultEffort: null});
+    let secondaryProfileId = null;
     cleanupCredentials = async () => {
-      const state = await ok("providers_list", {}); const p = state.profiles.find(p => p.id === saved.id);
-      if (p?.credential.revision > 0 && p.credential.status !== "missing") await ok("credential_remove", {profileId: p.id, expectedRevision: p.configRevision});
+      const state = await ok("providers_list", {});
+      for (const id of [saved.id, secondaryProfileId].filter(Boolean)) {
+        const p = state.profiles.find(profile => profile.id === id);
+        if (p?.credential.revision > 0 && p.credential.status !== "missing") await ok("credential_remove", {profileId: p.id, expectedRevision: p.configRevision});
+      }
     };
     const put = await ok("credential_put", {profileId: saved.id, expectedRevision: saved.configRevision, secret});
     const models = await ok("provider_models", {profileId: saved.id, expectedRevision: put.configRevision, refresh: true});
@@ -252,6 +276,156 @@ async function desktop(mode, binary, cli, ca) {
     await until(() => evaluate("document.querySelector('[data-testid=task-result]')?.dataset.status"), s => s === "completed");
     assert.match(await evaluate("document.querySelector('[data-testid=task-reply]')?.textContent ?? ''"), /CONTROLLED_UI_OK/);
     record("Real UI create/session confirmation/IME guard/start/CLI reply and authoritative completed state");
+    if (phase38) {
+      verifyStage = "concurrent target profile setup";
+      const stableSelection = {...selection};
+      const startDirect = async (selected, targetSession = sessionId) => {
+        const currentSession = await ok("session_get", {sessionId: targetSession});
+        const settings = await ok("settings_get", {scope: "project", projectId: project.id});
+        return (await ok("task_start", {projectId: project.id, sessionId: targetSession, clientRequestId: randomUUID(),
+          expectedProjectRevision: project.revision, expectedSessionRevision: currentSession.revision,
+          expectedProjectSettingsRevision: settings.revision, expectedGlobalRevision: settings.globalRevision,
+          selection: selected, prompt: "S3_CONCURRENCY_PROMPT_SENTINEL"})).task;
+      };
+      const terminalTask = taskId => until(() => ok("task_get", {taskId}), task => ["completed", "failed", "cancelled", "interrupted"].includes(task.status));
+      const terminalOperation = operationId => until(() => ok("operation_get", {operationId}), operation => ["completed", "failed", "cancelled"].includes(operation.phase), 240000);
+      const secondProfile = await ok("provider_save", {profileId: null, expectedRevision: null, name: "UI concurrent target", endpoint: secondSite.baseUrl, defaultModel: null, defaultEffort: null});
+      secondaryProfileId = secondProfile.id;
+      const secondCredential = await ok("credential_put", {profileId: secondProfile.id, expectedRevision: secondProfile.configRevision, secret: secondSecret});
+      const secondModels = await ok("provider_models", {profileId: secondProfile.id, expectedRevision: secondCredential.configRevision, refresh: true});
+      const secondCapability = secondModels.capabilities.find(c => c.modelId === stableSelection.modelId) ?? secondModels.capabilities[0];
+      const secondSelection = {profileId: secondProfile.id, expectedRevision: secondCredential.configRevision, modelId: secondCapability.modelId,
+        effort: secondCapability.efforts.includes(stableSelection.effort) ? stableSelection.effort : secondCapability.efforts[0]};
+      const requestsBeforeHold = site.requests.length;
+      const heldTask = await submit("hold-first", "S3_CONCURRENCY_PROMPT_SENTINEL");
+      await until(() => ok("task_get", {taskId: heldTask.id}), task => task.status === "running");
+      await until(() => site.requests.length > requestsBeforeHold);
+      const busyEdit = await call("provider_save", {profileId: saved.id, expectedRevision: stableSelection.expectedRevision,
+        name: "UI concurrent mutation", endpoint: site.baseUrl, defaultModel: null, defaultEffort: null});
+      assert.equal(busyEdit.status, "error"); assert.equal(busyEdit.error.code, "PA_CREDENTIAL_BUSY");
+      const busyDisable = await call("provider_set_enabled", {profileId: saved.id, expectedRevision: stableSelection.expectedRevision, enabled: false});
+      assert.equal(busyDisable.error?.code, "PA_CREDENTIAL_BUSY");
+      const busyDelete = await call("provider_delete", {profileId: saved.id, expectedRevision: stableSelection.expectedRevision});
+      assert.equal(busyDelete.error?.code, "PA_PROVIDER_REFERENCED");
+      const defaultsBefore = await ok("settings_get", {scope: "project", projectId: project.id});
+      await ok("project_settings_update", {projectId: project.id, expectedRevision: defaultsBefore.revision,
+        expectedGlobalRevision: defaultsBefore.globalRevision, selection: secondSelection});
+      assert.deepEqual((await ok("task_get", {taskId: heldTask.id})).snapshot, heldTask.snapshot);
+      record("Occupied profile edit/disable/delete fail closed; project defaults change only future task selection");
+      const queuedSession = (await ok("session_create", {projectId: project.id, expectedProjectRevision: project.revision, clientRequestId: randomUUID()})).session;
+      const queuedTask = await startDirect(stableSelection, queuedSession.id);
+      assert.equal(queuedTask.snapshot.profileId, stableSelection.profileId);
+      verifyStage = "provider switch waits for active task";
+      const switchReceipt = await ok("provider_switch", secondSelection);
+      const waiting = await until(() => ok("operation_get", {operationId: switchReceipt.operationId}), operation => operation.phase === "waiting_for_idle" || ["completed", "failed", "cancelled"].includes(operation.phase));
+      assert.equal(waiting.phase, "waiting_for_idle", JSON.stringify(waiting));
+      assert.equal((await ok("task_get", {taskId: heldTask.id})).status, "running");
+      const waitingProfile = await ok("providers_list", {});
+      assert.equal(waitingProfile.active.profileId, stableSelection.profileId);
+      const pending = [];
+      for (let i = 0; i < 7; i++) pending.push(await ok("provider_switch", secondSelection));
+      assert.equal((await call("provider_switch", secondSelection)).error?.code, "PA_PROVIDER_QUEUE_FULL");
+      for (const receipt of pending) await ok("operation_cancel", {operationId: receipt.operationId});
+      // The IPC response is intentionally not awaited, modelling a lost reply.
+      await evaluate(`window.__s38Credential=null;void ${invoke("credential_put", {profileId: saved.id, expectedRevision: stableSelection.expectedRevision, secret})}.then(value=>{window.__s38Credential=value});true`);
+      await delay(300);
+      assert.equal(await evaluate("window.__s38Credential"), null);
+      site.setMode("ok", project.absolutePath);
+      site.release();
+      const heldResult = await until(() => ok("task_get", {taskId: heldTask.id}), task => ["completed", "failed", "cancelled", "interrupted"].includes(task.status));
+      assert.equal(heldResult.status, "completed");
+      assert.equal((await terminalTask(queuedTask.id)).status, "completed");
+      const replacement = await until(() => evaluate("window.__s38Credential"));
+      assert.equal(replacement.status, "ok");
+      assert.equal(replacement.data.configRevision, stableSelection.expectedRevision + 1);
+      assert.deepEqual((await ok("task_get", {taskId: heldTask.id})).snapshot, heldTask.snapshot);
+      assert.deepEqual((await ok("task_get", {taskId: queuedTask.id})).snapshot, queuedTask.snapshot);
+      const applied = await until(() => ok("operation_get", {operationId: switchReceipt.operationId}), operation => ["completed", "failed", "cancelled"].includes(operation.phase));
+      assert.equal(applied.phase, "completed"); assert.equal(applied.result.outcome, "applied");
+      assert.equal(secondSite.requests.at(-1).keyMatches, true);
+      record("Real task holds its profile snapshot while edits reject and a queued provider switch waits for idle");
+      record("Eight-operation queue rejects overflow; cancelled entries drain and credential replacement waits for both admitted tasks without lock starvation");
+
+      verifyStage = "candidate failure and compensating recovery with real CLI probes";
+      secondSite.setSequence(["unauthorized"]);
+      assert.equal((await terminalOperation((await ok("provider_switch", secondSelection)).operationId)).result.outcome, "unchanged");
+      secondSite.setSequence(["ok", "unauthorized", "ok"]);
+      assert.equal((await terminalOperation((await ok("provider_switch", secondSelection)).operationId)).result.outcome, "rolled_back");
+      secondSite.setSequence(["ok", "unauthorized", "unauthorized"]);
+      const defaultsBeforeFault = (await ok("settings_get", {scope: "global"})).values.filter(value => value.key === "ai_defaults");
+      assert.equal((await terminalOperation((await ok("provider_switch", secondSelection)).operationId)).result.outcome, "rollback_failed");
+      assert.equal((await ok("providers_list", {})).configState, "error");
+      assert.deepEqual((await ok("settings_get", {scope: "global"})).values.filter(value => value.key === "ai_defaults"), defaultsBeforeFault);
+      const blockedSession = await ok("session_get", {sessionId});
+      const blockedSettings = await ok("settings_get", {scope: "project", projectId: project.id});
+      const blockedStart = await call("task_start", {projectId: project.id, sessionId, clientRequestId: randomUUID(),
+        expectedProjectRevision: project.revision, expectedSessionRevision: blockedSession.revision,
+        expectedProjectSettingsRevision: blockedSettings.revision, expectedGlobalRevision: blockedSettings.globalRevision,
+        selection: secondSelection, prompt: "S3_CONCURRENCY_PROMPT_SENTINEL"});
+      assert.equal(blockedStart.error?.code, "PA_PROVIDER_ROLLBACK_FAILED");
+      assert.equal((await terminalOperation((await ok("provider_test", secondSelection)).operationId)).phase, "completed");
+      assert.equal((await ok("providers_list", {})).configState, "error");
+      assert.equal((await terminalOperation((await ok("provider_switch", secondSelection)).operationId)).result.outcome, "applied");
+      record("Real candidate/apply/rollback probe failures preserve old defaults, block task admission on failed recovery, and require explicit verified switch to repair");
+
+      verifyStage = "reload and missing event recovery during a running task";
+      secondSite.setMode("hold-first", project.absolutePath);
+      const reloadTask = await startDirect(secondSelection);
+      await until(() => ok("task_get", {taskId: reloadTask.id}), task => task.status === "running");
+      await ok("ipc_fixture", {action: "task_ui_gap"});
+      await cdp("Page.reload");
+      await until(() => evaluate("Boolean(document.querySelector('.app-shell'))"));
+      await click(".nav-item[data-page=tasks]");
+      const recoveredTask = await ok("task_find_by_request", {projectId: project.id, sessionId, clientRequestId: reloadTask.clientRequestId});
+      assert.equal(recoveredTask.id, reloadTask.id);
+      assert.deepEqual(recoveredTask.snapshot, reloadTask.snapshot);
+      await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:window|close',{label:'main'})");
+      assert.equal(child.exitCode, null);
+      await overlayOk("overlay_control", {action: "open_main"});
+      await ok("overlay_control", {action: "disable"});
+      assert.equal((await ok("task_get", {taskId: reloadTask.id})).status, "running");
+      secondSite.setMode("ok"); secondSite.release();
+      assert.equal((await terminalTask(reloadTask.id)).status, "completed");
+      record("Lost response lookup, event gap and WebView reload recover the same task; main close and overlay disable preserve running work");
+
+      verifyStage = "explicit exit or approval crash with active owned process";
+      const recoveryMode = mode === "dev" ? "exit" : "crash";
+      secondSite.setMode(recoveryMode === "exit" ? "hold-first" : "approval", project.absolutePath);
+      const shutdownTask = await startDirect(secondSelection);
+      await until(() => ok("task_get", {taskId: shutdownTask.id}), task => task.status === (recoveryMode === "exit" ? "running" : "approval_required"));
+      const cancelledProbe = await ok("provider_test", secondSelection);
+      await ok("operation_cancel", {operationId: cancelledProbe.operationId});
+      assert.equal((await terminalOperation(cancelledProbe.operationId)).phase, "cancelled");
+      assert.equal((await ok("task_get", {taskId: shutdownTask.id})).status, recoveryMode === "exit" ? "running" : "approval_required");
+      const shutdownSwitch = await ok("provider_switch", secondSelection);
+      await until(() => ok("operation_get", {operationId: shutdownSwitch.operationId}), operation => operation.phase === "waiting_for_idle");
+      await evaluate(`window.__s38Catalog=null;void ${invoke("provider_models", {profileId: secondProfile.id, expectedRevision: secondSelection.expectedRevision, refresh: true})}.then(value=>{window.__s38Catalog=value});true`);
+      await delay(300);
+      assert.equal(await evaluate("window.__s38Catalog"), null);
+      const ownedPids = ownedChildPids(child.pid);
+      assert.ok(ownedPids.length > 0, "The held task must own a live CLI process before exit/crash");
+      if (recoveryMode === "exit") await click(".exit-button");
+      else {
+        // Kill the app only; its kill-on-close Job must terminate its CLI descendants.
+        assert.equal(spawnSync("taskkill.exe", ["/pid", String(child.pid), "/f"], {windowsHide: true, stdio: "ignore"}).status, 0);
+      }
+      await until(() => child.exitCode, code => code !== null);
+      await until(() => childrenStopped(ownedPids));
+      evidence.ownedChildrenObserved = ownedPids.length; evidence.ownedChildrenStopped = true;
+      if (recoveryMode === "exit") assert.equal(child.exitCode, 0);
+      const requestsBeforeRecovery = site.requests.length + secondSite.requests.length;
+      await recoverFixture(recoveryMode);
+      assert.equal(site.requests.length + secondSite.requests.length, requestsBeforeRecovery);
+      record(recoveryMode === "exit" ? "Explicit exit cancels active work and drains provider operations before owned resource cleanup" : "App-only crash kills the owned CLI; independent repeated startup interrupts work and invalidates pending approval without replay");
+      const files = await readdir(join(dir, "logs"));
+      const safeLogs = (await Promise.all(files.filter(file => file.endsWith(".jsonl")).map(file => readFile(join(dir, "logs", file), "utf8")))).join("\n");
+      const safeDb = await readFile(join(dir, "project-assistant.sqlite3"));
+      for (const marker of [secret, secondSecret, "S3_CONCURRENCY_PROMPT_SENTINEL", "CONTROLLED_UI_OK", "CONTROLLED_CONCURRENT_OK"]) {
+        assert.ok(!safeLogs.includes(marker)); assert.ok(!safeDb.includes(Buffer.from(marker))); assert.ok(!processOutput.includes(marker));
+      }
+      evidence.passed = true; children.delete(child); cleanupCredentials = null;
+      return;
+    }
     await cdp("Page.reload"); await until(() => evaluate("Boolean(document.querySelector('.app-shell'))")); await click(".nav-item[data-page=tasks]");
     await until(() => evaluate("document.querySelector('[data-testid=task-reply]')?.textContent"), t => t?.includes("CONTROLLED_UI_OK"));
     await ok("ipc_fixture", {action: "task_ui_gap"});
@@ -411,7 +585,7 @@ async function desktop(mode, binary, cli, ca) {
     const logFiles = await readdir(join(dir, "logs"));
     const logs = (await Promise.all(logFiles.filter(f => f.endsWith(".jsonl")).map(f => readFile(join(dir, "logs", f), "utf8")))).join("\n");
     const database = await readFile(join(dir, "project-assistant.sqlite3"));
-    for (const sentinel of [secret, "S3_UI_PROMPT_SENTINEL", "S3_OVERLAY_PROMPT_SENTINEL", "S3_OVERLAY_APPROVAL_SENTINEL", "S3_OVERLAY_CANCEL_SENTINEL", "CONTROLLED_UI_OK", "S3_LONG_REPLY_", "S3_DIFF_SENTINEL", "S3_RAW_SENTINEL"]) {
+    for (const sentinel of [secret, "S3_UI_PROMPT_SENTINEL", "S3_OVERLAY_PROMPT_SENTINEL", "S3_OVERLAY_APPROVAL_SENTINEL", "S3_OVERLAY_CANCEL_SENTINEL", "S3_CONCURRENCY_PROMPT_SENTINEL", "S3_SHUTDOWN_PROMPT_SENTINEL", "CONTROLLED_UI_OK", "S3_LONG_REPLY_", "S3_DIFF_SENTINEL", "S3_RAW_SENTINEL"]) {
       assert.ok(!logs.includes(sentinel)); assert.ok(!processOutput.includes(sentinel));
       assert.ok(!database.includes(Buffer.from(sentinel)), "transcript must not persist");
     }
@@ -424,14 +598,15 @@ async function desktop(mode, binary, cli, ca) {
     evidence.passed = true;
     console.log(`desktop-${mode}: passed`);
   } finally {
-    if (cleanupCredentials && child.exitCode === null) {
+    if (!phase38 && cleanupCredentials && child.exitCode === null) {
       try { await cleanupCredentials(); evidence.credentialCleanup = true; } catch { evidence.credentialCleanup = false; }
     }
     socket?.close();
     overlaySocket?.close();
     if (child.exitCode === null) spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {windowsHide: true, stdio: "ignore"});
+    if (phase38 && !recoveryDone) await recoverFixture("cleanup");
     children.delete(child);
-    assert.ok(!processOutput.includes(secret)); await writeFile(join(output, `desktop-${mode}.log`), processOutput);
+    assert.ok(!processOutput.includes(secret) && !processOutput.includes(secondSecret)); await writeFile(join(output, `desktop-${mode}.log`), processOutput);
     report.desktop.push(evidence);
   }
 }
@@ -452,6 +627,7 @@ try {
   const generated = spawnSync(join(process.env.ProgramFiles, "Git/usr/bin/openssl.exe"), ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1", "-keyout", key, "-out", ca, "-subj", "/CN=Project Assistant UI", "-addext", "subjectAltName=IP:127.0.0.1", "-addext", "basicConstraints=critical,CA:TRUE"], {windowsHide: true, stdio: "ignore"});
   assert.equal(generated.status, 0);
   site = await controlledSite("UI", secret, {tls: {cert: await readFile(ca), key: await readFile(key)}});
+  if (phase38) secondSite = await controlledSite("CONCURRENT", secondSecret, {tls: {cert: await readFile(ca), key: await readFile(key)}});
   vite = spawn(process.execPath, npmArgs(["run", "dev"]), {cwd: root, windowsHide: true, stdio: "ignore"}); children.add(vite);
   await until(async () => { try { return (await fetch("http://localhost:1420")).ok; } catch { return false; } });
   await desktop("dev", devBinary, cli, ca);
@@ -459,14 +635,16 @@ try {
   const built = await run("embedded-test-build", "cargo", ["test", ...common, "--lib", "--features", "tauri/custom-protocol", "--no-run"]);
   const builtBinary = resolve(root, built.match(/Executable unittests[^\r\n]*\(([^)]+\.exe)\)/)?.[1] ?? "missing");
   site.setMode("ok"); await desktop("built", builtBinary, cli, ca);
-  report.routes = {requests: site.requests.length, allKeysBound: site.requests.every(r => r.keyMatches)};
+  const routeRequests = [...site.requests, ...(secondSite?.requests ?? [])];
+  report.routes = {requests: routeRequests.length, allKeysBound: routeRequests.every(r => r.keyMatches)};
   assert.ok(report.routes.allKeysBound);
   report.passed = true;
 } catch (error) { report.error = error instanceof Error ? error.message : String(error); console.error(report.error); process.exitCode = 1; }
 finally {
   for (const child of children) if (child.exitCode === null) spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {windowsHide: true, stdio: "ignore"});
   if (site) { site.release(); await site.close(); }
+  if (secondSite) { secondSite.release(); await secondSite.close(); }
   await rm(temp, {recursive: true, force: true, maxRetries: 10, retryDelay: 200}); report.temporaryRemoved = true;
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2) + "\n");
 }
-console.log(`Task UI verification: ${report.passed ? "passed" : "failed"}; artifacts/phase-${phase37 ? "3-7" : "3-6"}/report.json`);
+console.log(`Task UI verification: ${report.passed ? "passed" : "failed"}; artifacts/phase-${step.replace(".", "-")}/report.json`);
